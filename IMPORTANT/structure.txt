@@ -1,0 +1,14 @@
+analysis_project/
+├── data/
+│   ├── raw/
+│   ├── processed/
+│   └── examples/
+├── scripts/
+│   └── Python/
+├── tests/
+├── notebooks/
+├── results/
+│   ├── plots/
+│   ├── models/
+│   └── reports/
+└── config/ 
