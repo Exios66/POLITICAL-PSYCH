@@ -1,6 +1,7 @@
 import re
 import logging
 import sys
+import traceback
 import nltk
 from nltk.tokenize import sent_tokenize
 
@@ -94,36 +95,41 @@ def compare_news_habits(news_source, news_frequency):
     return evaluation
 
 def main():
-    # Example open-ended response
-    response = (
-        "First, I check the source of the news. Then, I cross-check it with other news websites. "
-        "I also verify if the information has been reported by any reputable news agency. "
-        "Finally, I check the comments and discussions on social media to get different perspectives."
-    )
-    
-    # Evaluate response
-    steps_count = evaluate_open_response(response)
-    
-    # Example news source and frequency inputs with validation
-    news_source = 3  # News websites
-    news_frequency = 4  # More than 2 hours
+    try:
+        # Example open-ended response
+        response = (
+            "First, I check the source of the news. Then, I cross-check it with other news websites. "
+            "I also verify if the information has been reported by any reputable news agency. "
+            "Finally, I check the comments and discussions on social media to get different perspectives."
+        )
+        
+        # Evaluate response
+        steps_count = evaluate_open_response(response)
+        
+        # Example news source and frequency inputs with validation
+        news_source = 3  # News websites
+        news_frequency = 4  # More than 2 hours
 
-    # Validate inputs before calling compare_news_habits
-    if news_source not in range(1, 7):
-        logging.error(f"Invalid news source value: {news_source}")
-        print("Invalid news source provided.")
-        return
-    if news_frequency not in range(1, 5):
-        logging.error(f"Invalid news frequency value: {news_frequency}")
-        print("Invalid news frequency provided.")
-        return
-    
-    # Compare news habits
-    evaluation = compare_news_habits(news_source, news_frequency)
+        # Validate inputs before calling compare_news_habits
+        if news_source not in range(1, 7):
+            logging.error(f"Invalid news source value: {news_source}")
+            print("Invalid news source provided.")
+            return
+        if news_frequency not in range(1, 5):
+            logging.error(f"Invalid news frequency value: {news_frequency}")
+            print("Invalid news frequency provided.")
+            return
+        
+        # Compare news habits
+        evaluation = compare_news_habits(news_source, news_frequency)
 
-    # Output results
-    print(f"Number of distinct steps identified: {steps_count}")
-    print(f"Evaluation of news habits: {evaluation}")
+        # Output results
+        print(f"Number of distinct steps identified: {steps_count}")
+        print(f"Evaluation of news habits: {evaluation}")
+
+    except Exception as e:
+        logging.error("An error occurred in open_ended_analysis.py.")
+        logging.error(traceback.format_exc())
 
 if __name__ == "__main__":
     main()

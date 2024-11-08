@@ -1,4 +1,6 @@
 # Import necessary libraries
+import logging
+import traceback
 import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
@@ -15,6 +17,8 @@ from scipy.cluster.hierarchy import dendrogram, linkage
 from scipy.stats import chi2_contingency, ttest_ind, f_oneway
 import statsmodels.api as sm
 from statsmodels.formula.api import ols
+
+from cluster import ClusterAnalysis
 
 # Load the survey data
 # Replace 'survey_data.csv' with the actual file path
@@ -219,3 +223,34 @@ print(cluster_summary)
 # Save the processed data with cluster labels
 data.to_csv('processed_survey_data.csv', index=False)
 print("Processed data saved to 'processed_survey_data.csv'.")
+
+def main():
+    try:
+        # Initialize ClusterAnalysis
+        cluster_analysis = ClusterAnalysis(file_path='survey_data.csv')
+        data = cluster_analysis.load_data()
+
+        # Data Cleaning
+        cleaned_data = cluster_analysis.clean_data()
+
+        # Normalization
+        normalized_data = cluster_analysis.normalize_features()
+
+        # Exploratory Data Analysis
+        cluster_analysis.plot_correlation_matrix()
+        cluster_analysis.plot_pca()
+
+        # Clustering
+        optimal_k = cluster_analysis.find_optimal_clusters(method='silhouette', max_k=10)
+        cluster_analysis.perform_clustering(method='kmeans', n_clusters=optimal_k)
+
+        # Save processed data
+        cluster_analysis.data.to_csv('processed_survey_data.csv', index=False)
+        logging.info("Processed data saved to 'processed_survey_data.csv'.")
+
+    except Exception as e:
+        logging.error("An error occurred in full_survey.py.")
+        logging.error(traceback.format_exc())
+
+if __name__ == "__main__":
+    main()

@@ -34,6 +34,7 @@ from sklearn.manifold import TSNE
 from sklearn.mixture import GaussianMixture
 from sklearn.neighbors import NearestNeighbors
 from kneed import KneeLocator
+from cluster import ClusterAnalysis, ClusterVisualizer
 
 @dataclass
 class ClusteringResults:
@@ -778,27 +779,28 @@ class ElectionSurveyAnalysis:
         return tests
 
 if __name__ == "__main__":
-    # Example usage with error handling
     try:
-        analyzer = ElectionSurveyAnalysis('PSY_492_Election_Experience_Survey.csv', log_level=logging.DEBUG)
-        
-        # Load and preprocess data
-        data = analyzer.load_data()
-        normalized_data = analyzer.preprocess_data(method='robust')
-        
-        # Perform clustering with multiple methods
-        clustering_results = analyzer.perform_clustering(
-            max_clusters=10,
-            methods=['kmeans', 'hierarchical', 'dbscan']
-        )
-        
-        # Analyze clusters
-        analysis_results = analyzer.analyze_clusters(clustering_results)
-        
-        # Generate visualizations
-        analyzer.perform_pca_visualization()
-        
+        # Initialize ClusterAnalysis
+        cluster_analysis = ClusterAnalysis(file_path='processed_survey_data.csv')
+        cluster_analysis.load_data()
+        cluster_analysis.clean_data()
+        cluster_analysis.normalize_features()
+
+        # Find optimal number of clusters
+        optimal_k = cluster_analysis.find_optimal_clusters(method='elbow', max_k=10)
+        cluster_analysis.perform_clustering(method='kmeans', n_clusters=optimal_k)
+
+        # Initialize Visualizer
+        visualizer = ClusterVisualizer(save_dir=Path('cluster_plots'))
+        embeddings = cluster_analysis.perform_dimensionality_reduction(method='pca')
+        visualizer.plot_interactive_clusters(embeddings, cluster_analysis.clusters, method='PCA')
+
+        # Save plots
+        visualizer.plot_cluster_distribution()
+        visualizer.plot_pca()
+
+        logging.info("Cluster analysis completed successfully.")
+
     except Exception as e:
-        logging.error(f"Analysis failed: {str(e)}")
+        logging.error("An error occurred during cluster analysis.")
         logging.error(traceback.format_exc())
-        sys.exit(1)
