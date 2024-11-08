@@ -18,6 +18,7 @@ from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolb
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+from sklearn.neighbors import NearestNeighbors
 
 # Configure logging
 logging.basicConfig(
@@ -319,7 +320,8 @@ class ClusterAnalysis:
         output_dir: Optional[str] = None,
         handle_missing: bool = True,
         remove_outliers: bool = True,
-        normalize: bool = True
+        normalize: bool = True,
+        random_state: int = 42
     ):
         """
         Initialize ClusterAnalysis with data file path and processing options.
@@ -328,8 +330,9 @@ class ClusterAnalysis:
             file_path: Path to the data file
             output_dir: Optional path to output directory for results
             handle_missing: Whether to handle missing values
-            remove_outliers: Whether to remove outliers
+            remove_outliers: Whether to remove outliers 
             normalize: Whether to normalize features
+            random_state: Random seed for reproducibility
         """
         self.file_path = Path(file_path)
         self.timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
@@ -341,10 +344,23 @@ class ClusterAnalysis:
             
         self.output_dir.mkdir(parents=True, exist_ok=True)
         
-        self.handle_missing = handle_missing
-        self.remove_outliers = remove_outliers
-        self.normalize = normalize
+        # Create subdirectories
+        self.plots_dir = self.output_dir / 'plots'
+        self.plots_dir.mkdir(exist_ok=True)
         
+        self.models_dir = self.output_dir / 'models'
+        self.models_dir.mkdir(exist_ok=True)
+        
+        self.results_dir = self.output_dir / 'results'
+        self.results_dir.mkdir(exist_ok=True)
+        
+        # Processing flags
+        self.handle_missing = handle_missing
+        self.remove_outliers = remove_outliers 
+        self.normalize = normalize
+        self.random_state = random_state
+        
+        # Initialize data attributes
         self.data = None
         self.cleaned_data = None
         self.normalized_data = None
@@ -352,8 +368,34 @@ class ClusterAnalysis:
         self.n_clusters = None
         self.feature_importance = None
         self.cluster_profiles = None
+        self.cluster_metrics = None
+        self.model = None
         
-        logger.info(f"ClusterAnalysis initialized with output directory: {self.output_dir}")
+        # Set up logging
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+        
+        # Add file handler
+        log_file = self.output_dir / 'cluster_analysis.log'
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setLevel(logging.INFO)
+        
+        # Add console handler
+        console_handler = logging.StreamHandler()
+        console_handler.setLevel(logging.INFO)
+        
+        # Create formatter
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        file_handler.setFormatter(formatter)
+        console_handler.setFormatter(formatter)
+        
+        # Add handlers to logger
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+        
+        self.logger.info(f"ClusterAnalysis initialized with output directory: {self.output_dir}")
 
     def load_data(self) -> None:
         """
@@ -362,26 +404,54 @@ class ClusterAnalysis:
         Raises:
             FileNotFoundError: If the data file doesn't exist
             pd.errors.EmptyDataError: If the data file is empty
+            ValueError: If data format is invalid
         """
         try:
-            self.data = pd.read_csv(self.file_path)
+            # Check file extension
+            extension = self.file_path.suffix.lower()
             
-            # Convert survey_date to datetime
-            if 'survey_date' in self.data.columns:
-                self.data['survey_date'] = pd.to_datetime(self.data['survey_date'])
+            if extension == '.csv':
+                self.data = pd.read_csv(self.file_path)
+            elif extension in ['.xls', '.xlsx']:
+                self.data = pd.read_excel(self.file_path)
+            elif extension == '.json':
+                self.data = pd.read_json(self.file_path)
+            else:
+                raise ValueError(f"Unsupported file format: {extension}")
             
-            logger.info(f"Data loaded successfully from {self.file_path}")
+            # Validate data
+            if self.data.empty:
+                raise pd.errors.EmptyDataError("Data file is empty")
+                
+            # Check for numeric columns
+            numeric_cols = self.data.select_dtypes(include=['float64', 'int64']).columns
+            if len(numeric_cols) == 0:
+                raise ValueError("No numeric columns found in data")
+            
+            # Convert date columns
+            date_cols = self.data.select_dtypes(include=['object']).apply(
+                lambda x: pd.to_datetime(x, errors='coerce').notna().all()
+            )
+            for col in date_cols[date_cols].index:
+                self.data[col] = pd.to_datetime(self.data[col])
+            
+            # Save raw data copy
+            self.data.to_csv(self.output_dir / 'raw_data.csv', index=False)
+            
+            self.logger.info(f"Data loaded successfully from {self.file_path}")
+            self.logger.info(f"Shape: {self.data.shape}")
+            self.logger.info(f"Columns: {list(self.data.columns)}")
             
         except FileNotFoundError:
-            logger.error(f"Data file not found: {self.file_path}")
+            self.logger.error(f"Data file not found: {self.file_path}")
             raise
             
         except pd.errors.EmptyDataError:
-            logger.error(f"Data file is empty: {self.file_path}")
+            self.logger.error(f"Data file is empty: {self.file_path}")
             raise
             
         except Exception as e:
-            logger.error(f"Error loading data: {str(e)}")
+            self.logger.error(f"Error loading data: {str(e)}")
             raise
 
     def clean_data(self) -> None:
@@ -390,6 +460,7 @@ class ClusterAnalysis:
         
         Raises:
             ValueError: If data is None or empty
+            RuntimeError: If cleaning fails
         """
         if self.data is None or self.data.empty:
             raise ValueError("No data to clean. Load data first.")
@@ -398,44 +469,75 @@ class ClusterAnalysis:
             # Create copy of raw data
             self.cleaned_data = self.data.copy()
             
+            # Get column types
+            numeric_cols = self.cleaned_data.select_dtypes(
+                include=['float64', 'int64']
+            ).columns
+            cat_cols = self.cleaned_data.select_dtypes(
+                include=['object']
+            ).columns
+            date_cols = self.cleaned_data.select_dtypes(
+                include=['datetime64']
+            ).columns
+            
             # Handle missing values
             if self.handle_missing:
-                # For numeric columns, fill with median
-                numeric_cols = self.cleaned_data.select_dtypes(
-                    include=['float64', 'int64']
-                ).columns
-                self.cleaned_data[numeric_cols] = self.cleaned_data[numeric_cols].fillna(
-                    self.cleaned_data[numeric_cols].median()
-                )
+                # For numeric columns
+                if len(numeric_cols) > 0:
+                    # Check if more than 50% missing
+                    missing_pct = self.cleaned_data[numeric_cols].isnull().mean()
+                    cols_to_drop = missing_pct[missing_pct > 0.5].index
+                    
+                    if len(cols_to_drop) > 0:
+                        self.logger.warning(
+                            f"Dropping columns with >50% missing values: {list(cols_to_drop)}"
+                        )
+                        self.cleaned_data = self.cleaned_data.drop(columns=cols_to_drop)
+                        numeric_cols = numeric_cols.drop(cols_to_drop)
+                    
+                    # Fill remaining missing with median
+                    self.cleaned_data[numeric_cols] = self.cleaned_data[numeric_cols].fillna(
+                        self.cleaned_data[numeric_cols].median()
+                    )
                 
-                # For categorical columns, fill with mode
-                cat_cols = self.cleaned_data.select_dtypes(
-                    include=['object']
-                ).columns
-                self.cleaned_data[cat_cols] = self.cleaned_data[cat_cols].fillna(
-                    self.cleaned_data[cat_cols].mode().iloc[0]
-                )
+                # For categorical columns
+                if len(cat_cols) > 0:
+                    self.cleaned_data[cat_cols] = self.cleaned_data[cat_cols].fillna(
+                        self.cleaned_data[cat_cols].mode().iloc[0]
+                    )
+                
+                # For date columns
+                if len(date_cols) > 0:
+                    self.cleaned_data[date_cols] = self.cleaned_data[date_cols].fillna(
+                        method='ffill'
+                    )
             
             # Remove outliers using IQR method
             if self.remove_outliers:
-                numeric_cols = self.cleaned_data.select_dtypes(
-                    include=['float64', 'int64']
-                ).columns
-                
-                Q1 = self.cleaned_data[numeric_cols].quantile(0.25)
-                Q3 = self.cleaned_data[numeric_cols].quantile(0.75)
-                IQR = Q3 - Q1
-                
-                outlier_mask = ~((self.cleaned_data[numeric_cols] < (Q1 - 1.5 * IQR)) | 
-                                (self.cleaned_data[numeric_cols] > (Q3 + 1.5 * IQR))).any(axis=1)
-                
-                self.cleaned_data = self.cleaned_data[outlier_mask]
+                if len(numeric_cols) > 0:
+                    Q1 = self.cleaned_data[numeric_cols].quantile(0.25)
+                    Q3 = self.cleaned_data[numeric_cols].quantile(0.75)
+                    IQR = Q3 - Q1
+                    
+                    outlier_mask = ~((self.cleaned_data[numeric_cols] < (Q1 - 1.5 * IQR)) | 
+                                    (self.cleaned_data[numeric_cols] > (Q3 + 1.5 * IQR))).any(axis=1)
+                    
+                    n_outliers = (~outlier_mask).sum()
+                    if n_outliers > 0:
+                        self.logger.info(f"Removing {n_outliers} outlier rows")
+                        self.cleaned_data = self.cleaned_data[outlier_mask]
             
-            logger.info("Data cleaned successfully")
+            # Save cleaned data
+            self.cleaned_data.to_csv(self.output_dir / 'cleaned_data.csv', index=False)
+            
+            # Log cleaning summary
+            self.logger.info("Data cleaned successfully")
+            self.logger.info(f"Original shape: {self.data.shape}")
+            self.logger.info(f"Cleaned shape: {self.cleaned_data.shape}")
             
         except Exception as e:
-            logger.error(f"Error cleaning data: {str(e)}")
-            raise
+            self.logger.error(f"Error cleaning data: {str(e)}")
+            raise RuntimeError(f"Data cleaning failed: {str(e)}")
 
     def normalize_features(self) -> None:
         """
@@ -443,18 +545,27 @@ class ClusterAnalysis:
         
         Raises:
             ValueError: If cleaned_data is None or empty
+            RuntimeError: If normalization fails
         """
         if self.cleaned_data is None or self.cleaned_data.empty:
             raise ValueError("No cleaned data available. Clean data first.")
             
         try:
+            # Get numeric columns
             numeric_cols = self.cleaned_data.select_dtypes(
                 include=['float64', 'int64']
             ).columns
             
+            if len(numeric_cols) == 0:
+                raise ValueError("No numeric columns to normalize")
+            
+            # Initialize scaler
             scaler = StandardScaler()
+            
+            # Fit and transform numeric data
             normalized = scaler.fit_transform(self.cleaned_data[numeric_cols])
             
+            # Create normalized dataframe
             self.normalized_data = pd.DataFrame(
                 normalized,
                 columns=numeric_cols,
@@ -466,73 +577,297 @@ class ClusterAnalysis:
                 if col not in numeric_cols:
                     self.normalized_data[col] = self.cleaned_data[col]
             
-            logger.info("Features normalized successfully")
+            # Save scaler
+            joblib.dump(
+                scaler,
+                self.models_dir / 'scaler.joblib'
+            )
+            
+            # Save normalized data
+            self.normalized_data.to_csv(
+                self.output_dir / 'normalized_data.csv',
+                index=False
+            )
+            
+            self.logger.info("Features normalized successfully")
+            self.logger.info(f"Normalized columns: {list(numeric_cols)}")
             
         except Exception as e:
-            logger.error(f"Error normalizing features: {str(e)}")
-            raise
+            self.logger.error(f"Error normalizing features: {str(e)}")
+            raise RuntimeError(f"Feature normalization failed: {str(e)}")
 
     def find_optimal_clusters(
         self,
         method: str = 'elbow',
-        max_k: int = 10
+        max_k: int = 10,
+        min_k: int = 2,
+        n_init: int = 10
     ) -> int:
         """
         Find optimal number of clusters using specified method.
         
         Args:
-            method: Method to use ('elbow' or 'silhouette')
+            method: Method to use ('elbow', 'silhouette', or 'gap')
             max_k: Maximum number of clusters to try
+            min_k: Minimum number of clusters to try
+            n_init: Number of initializations for k-means
             
         Returns:
             Optimal number of clusters
             
         Raises:
             ValueError: If normalized_data is None or empty
+            ValueError: If invalid method specified
+            RuntimeError: If optimization fails
         """
         if self.normalized_data is None or self.normalized_data.empty:
             raise ValueError("No normalized data available")
             
         try:
+            # Get numeric data
             numeric_data = self.normalized_data.select_dtypes(
                 include=['float64', 'int64']
             )
             
+            if len(numeric_data.columns) == 0:
+                raise ValueError("No numeric columns available for clustering")
+                
+            # Validate input parameters
+            if not isinstance(min_k, int) or min_k < 2:
+                raise ValueError("min_k must be an integer >= 2")
+            if not isinstance(max_k, int) or max_k <= min_k:
+                raise ValueError("max_k must be an integer > min_k")
+            if not isinstance(n_init, int) or n_init < 1:
+                raise ValueError("n_init must be a positive integer")
+                
+            K = range(min_k, max_k + 1)
+            
             if method == 'elbow':
                 distortions = []
-                K = range(1, max_k + 1)
+                inertias = []
                 
-                for k in K:
-                    kmeans = KMeans(n_clusters=k, random_state=42)
-                    kmeans.fit(numeric_data)
-                    distortions.append(kmeans.inertia_)
-                    
-                # Find elbow point
-                diffs = np.diff(distortions)
-                optimal_k = np.argmin(diffs) + 2
+                # Progress bar for long computations
+                with tqdm(total=len(K), desc="Computing elbow curve") as pbar:
+                    for k in K:
+                        kmeans = KMeans(
+                            n_clusters=k,
+                            n_init=n_init,
+                            random_state=self.random_state
+                        )
+                        kmeans.fit(numeric_data)
+                        distortions.append(kmeans.inertia_)
+                        inertias.append(kmeans.inertia_)
+                        pbar.update(1)
+                        
+                # Calculate first and second derivatives
+                d1 = np.diff(distortions)
+                d2 = np.diff(d1)
+                
+                # Find elbow using kneedle algorithm
+                elbow_idx = KneeLocator(
+                    list(K),
+                    distortions,
+                    curve='convex',
+                    direction='decreasing'
+                ).elbow_y
+                
+                optimal_k = K[distortions.index(elbow_idx)]
+                
+                # Plot elbow curve with derivatives
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+                
+                # Main elbow plot
+                ax1.plot(K, distortions, 'bo-', label='Distortion')
+                ax1.axvline(x=optimal_k, color='r', linestyle='--', label=f'Optimal k={optimal_k}')
+                ax1.set_xlabel('Number of Clusters (k)')
+                ax1.set_ylabel('Distortion')
+                ax1.set_title('Elbow Method Analysis')
+                ax1.legend()
+                ax1.grid(True)
+                
+                # Derivatives plot
+                ax2.plot(K[1:], d1, 'g.-', label='First Derivative')
+                ax2.plot(K[2:], d2, 'm.-', label='Second Derivative')
+                ax2.set_xlabel('Number of Clusters (k)')
+                ax2.set_ylabel('Rate of Change')
+                ax2.set_title('Derivatives Analysis')
+                ax2.legend()
+                ax2.grid(True)
+                
+                plt.tight_layout()
+                plt.savefig(self.plots_dir / 'elbow_analysis.png', dpi=300, bbox_inches='tight')
+                plt.close()
                 
             elif method == 'silhouette':
                 silhouette_scores = []
-                K = range(2, max_k + 1)
+                sample_silhouettes = []
                 
-                for k in K:
-                    kmeans = KMeans(n_clusters=k, random_state=42)
-                    labels = kmeans.fit_predict(numeric_data)
-                    silhouette_scores.append(
-                        silhouette_score(numeric_data, labels)
-                    )
-                    
+                with tqdm(total=len(K), desc="Computing silhouette scores") as pbar:
+                    for k in K:
+                        kmeans = KMeans(
+                            n_clusters=k,
+                            n_init=n_init,
+                            random_state=self.random_state
+                        )
+                        labels = kmeans.fit_predict(numeric_data)
+                        
+                        # Calculate full silhouette score
+                        silhouette_avg = silhouette_score(numeric_data, labels)
+                        silhouette_scores.append(silhouette_avg)
+                        
+                        # Calculate per-sample silhouette scores
+                        sample_silhouette_values = silhouette_samples(numeric_data, labels)
+                        sample_silhouettes.append(sample_silhouette_values)
+                        
+                        pbar.update(1)
+                        
                 optimal_k = K[np.argmax(silhouette_scores)]
                 
-            else:
-                raise ValueError(f"Invalid method: {method}")
+                # Create detailed silhouette plot
+                fig, (ax1, ax2) = plt.subplots(1, 2, figsize=(15, 7))
                 
-            logger.info(f"Optimal number of clusters found: {optimal_k}")
+                # Plot average silhouette scores
+                ax1.plot(K, silhouette_scores, 'bo-')
+                ax1.axvline(x=optimal_k, color='r', linestyle='--', 
+                          label=f'Optimal k={optimal_k}')
+                ax1.set_xlabel('Number of Clusters (k)')
+                ax1.set_ylabel('Silhouette Score')
+                ax1.set_title('Silhouette Analysis')
+                ax1.legend()
+                ax1.grid(True)
+                
+                # Plot detailed silhouette plot for optimal k
+                optimal_silhouettes = sample_silhouettes[K.index(optimal_k)]
+                optimal_labels = KMeans(
+                    n_clusters=optimal_k,
+                    n_init=n_init,
+                    random_state=self.random_state
+                ).fit_predict(numeric_data)
+                
+                y_lower = 10
+                for i in range(optimal_k):
+                    cluster_silhouettes = optimal_silhouettes[optimal_labels == i]
+                    cluster_silhouettes.sort()
+                    
+                    size = cluster_silhouettes.shape[0]
+                    y_upper = y_lower + size
+                    
+                    color = plt.cm.nipy_spectral(float(i) / optimal_k)
+                    ax2.fill_betweenx(np.arange(y_lower, y_upper),
+                                    0, cluster_silhouettes,
+                                    facecolor=color, alpha=0.7)
+                    y_lower = y_upper + 10
+                    
+                ax2.set_xlabel('Silhouette Coefficient')
+                ax2.set_ylabel('Cluster Label')
+                ax2.set_title('Silhouette Plot for Optimal k')
+                ax2.axvline(x=np.mean(optimal_silhouettes), color='r', linestyle='--')
+                
+                plt.tight_layout()
+                plt.savefig(self.plots_dir / 'silhouette_analysis.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                
+            elif method == 'gap':
+                gap_stats = []
+                gap_std = []
+                reference_datasets = 5
+                
+                with tqdm(total=len(K) * reference_datasets, desc="Computing gap statistic") as pbar:
+                    for k in K:
+                        # Store reference inertias for this k
+                        ref_inertias = []
+                        
+                        # Generate reference datasets and compute their inertias
+                        for _ in range(reference_datasets):
+                            # Generate random uniform data with same shape and bounds
+                            rand_data = np.random.uniform(
+                                low=numeric_data.min().values,
+                                high=numeric_data.max().values,
+                                size=numeric_data.shape
+                            )
+                            
+                            # Fit k-means and store inertia
+                            kmeans_ref = KMeans(
+                                n_clusters=k,
+                                n_init=n_init,
+                                random_state=self.random_state
+                            )
+                            kmeans_ref.fit(rand_data)
+                            ref_inertias.append(kmeans_ref.inertia_)
+                            pbar.update(1)
+                            
+                        # Fit k-means on real data
+                        kmeans_real = KMeans(
+                            n_clusters=k,
+                            n_init=n_init,
+                            random_state=self.random_state
+                        )
+                        kmeans_real.fit(numeric_data)
+                        
+                        # Compute gap statistic
+                        gap = np.log(np.mean(ref_inertias)) - np.log(kmeans_real.inertia_)
+                        gap_stats.append(gap)
+                        
+                        # Compute standard deviation
+                        sdk = np.std(np.log(ref_inertias)) * np.sqrt(1 + 1/reference_datasets)
+                        gap_std.append(sdk)
+                        
+                # Find optimal k using gap statistic criterion
+                gap_stats = np.array(gap_stats)
+                gap_std = np.array(gap_std)
+                optimal_k = K[np.argmax(gap_stats)]
+                
+                # Plot gap statistic results
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(12, 10))
+                
+                # Gap statistic plot
+                ax1.errorbar(K, gap_stats, yerr=gap_std, fmt='bo-', capsize=5)
+                ax1.axvline(x=optimal_k, color='r', linestyle='--',
+                          label=f'Optimal k={optimal_k}')
+                ax1.set_xlabel('Number of Clusters (k)')
+                ax1.set_ylabel('Gap Statistic')
+                ax1.set_title('Gap Statistic Analysis')
+                ax1.legend()
+                ax1.grid(True)
+                
+                # Standard deviation plot
+                ax2.plot(K, gap_std, 'go-', label='Standard Deviation')
+                ax2.set_xlabel('Number of Clusters (k)')
+                ax2.set_ylabel('Standard Deviation')
+                ax2.set_title('Gap Statistic Standard Deviation')
+                ax2.legend()
+                ax2.grid(True)
+                
+                plt.tight_layout()
+                plt.savefig(self.plots_dir / 'gap_analysis.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                
+            else:
+                raise ValueError(f"Invalid method: {method}. Must be one of: 'elbow', 'silhouette', 'gap'")
+            
+            # Save optimization results
+            optimization_results = {
+                'method': method,
+                'optimal_k': optimal_k,
+                'min_k': min_k,
+                'max_k': max_k,
+                'n_init': n_init,
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            with open(self.results_dir / 'optimization_results.json', 'w') as f:
+                json.dump(optimization_results, f, indent=4)
+            
+            self.logger.info(f"Optimal number of clusters found: {optimal_k}")
+            self.logger.info(f"Method used: {method}")
+            self.logger.info(f"Results saved to {self.results_dir / 'optimization_results.json'}")
+            
             return optimal_k
             
         except Exception as e:
-            logger.error(f"Error finding optimal clusters: {str(e)}")
-            raise
+            self.logger.error(f"Error finding optimal clusters: {str(e)}")
+            self.logger.error(traceback.format_exc())
+            raise RuntimeError(f"Cluster optimization failed: {str(e)}")
 
     def perform_clustering(
         self,
@@ -544,26 +879,33 @@ class ClusterAnalysis:
         Perform clustering using specified method.
         
         Args:
-            method: Clustering method ('kmeans', 'dbscan', or 'hierarchical')
+            method: Clustering method ('kmeans', 'dbscan', 'hierarchical', or 'gmm')
             n_clusters: Number of clusters
             **kwargs: Additional parameters for clustering algorithms
             
         Raises:
             ValueError: If normalized_data is None or empty
             ValueError: If invalid clustering method specified
+            RuntimeError: If clustering fails
         """
         if self.normalized_data is None or self.normalized_data.empty:
             raise ValueError("No normalized data available")
             
         try:
+            # Get numeric data
             numeric_data = self.normalized_data.select_dtypes(
                 include=['float64', 'int64']
             )
             
             if method == 'kmeans':
-                model = KMeans(n_clusters=n_clusters, random_state=42, **kwargs)
+                model = KMeans(
+                    n_clusters=n_clusters,
+                    random_state=self.random_state,
+                    **kwargs
+                )
                 self.clusters = model.fit_predict(numeric_data)
                 self.n_clusters = n_clusters
+                self.model = model
                 
                 # Calculate feature importance
                 self.feature_importance = pd.DataFrame({
@@ -575,6 +917,7 @@ class ClusterAnalysis:
                 model = DBSCAN(**kwargs)
                 self.clusters = model.fit_predict(numeric_data)
                 self.n_clusters = len(set(self.clusters)) - (1 if -1 in self.clusters else 0)
+                self.model = model
                 
             elif method == 'hierarchical':
                 model = AgglomerativeClustering(
