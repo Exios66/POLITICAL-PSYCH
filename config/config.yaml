@@ -1,0 +1,35 @@
+paths:
+  data:
+    raw: "data/raw/"
+    processed: "data/processed/"
+    examples: "data/examples/"
+  results:
+    plots: "results/plots/"
+    models: "results/models/"
+    reports: "results/reports/"
+
+analysis:
+  clustering:
+    max_clusters: 15
+    methods:
+      - kmeans
+      - hierarchical
+      - dbscan
+      - spectral
+    random_state: 42
+    cv_folds: 5
+
+  preprocessing:
+    scaling_method: "robust"
+    handle_outliers: true
+    categorical_encoding: "label"
+    missing_values:
+      numeric_strategy: "knn"
+      categorical_strategy: "mode"
+
+visualization:
+  style: "seaborn"
+  color_palette: "Set2"
+  plot_dimensions:
+    default: [10, 6]
+    large: [15, 10] 
