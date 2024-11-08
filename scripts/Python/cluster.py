@@ -5,325 +5,390 @@ import seaborn as sns
 import os
 import sys
 import logging
+from typing import Dict, List, Tuple, Any, Optional, Union
+from dataclasses import dataclass
+from pathlib import Path
+import datetime
+import json
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
-from sklearn.preprocessing import StandardScaler
-from sklearn.cluster import KMeans
-from sklearn.metrics import silhouette_score
+from sklearn.preprocessing import StandardScaler, RobustScaler, MinMaxScaler, LabelEncoder
+from sklearn.cluster import KMeans, AgglomerativeClustering, DBSCAN, SpectralClustering 
+from sklearn.mixture import GaussianMixture
+from sklearn.decomposition import PCA, TruncatedSVD
+from sklearn.manifold import TSNE
+from sklearn.metrics import silhouette_score, calinski_harabasz_score, davies_bouldin_score
+from sklearn.model_selection import cross_val_score, GridSearchCV
+from sklearn.ensemble import IsolationForest
+from sklearn.neighbors import NearestNeighbors
+from sklearn.impute import KNNImputer, SimpleImputer
+
+from scipy.cluster.hierarchy import dendrogram, linkage, fcluster
+from scipy.stats import chi2_contingency, f_oneway, kruskal
+from scipy.spatial.distance import pdist, squareform
+
+import umap
+from kneed import KneeLocator
+import warnings
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('cluster_analysis.log')
     ]
 )
 
-def load_data(file_path):
-    """
-    Load survey data from a CSV file.
+@dataclass
+class ClusteringResults:
+    """Data class to store clustering results"""
+    labels: np.ndarray
+    metrics: Dict[str, float]
+    model: Any
+    timestamp: str
+    parameters: Dict[str, Any]
+    validation_scores: Dict[str, List[float]]
+    cluster_centers: Optional[np.ndarray] = None
+    feature_importance: Optional[Dict[str, float]] = None
 
-    Parameters:
-    - file_path (str): Path to the CSV file.
+class ClusterAnalysis:
+    def __init__(self, file_path: str):
+        """Initialize cluster analysis"""
+        self.file_path = Path(file_path)
+        self.data = None
+        self.data_normalized = None
+        self.cluster_labels = None
+        self.pca_results = None
+        self.umap_results = None 
+        self.tsne_results = None
+        self.clustering_history = []
+        self.feature_columns = [
+            'News_1', 'News_frequency',
+            'Trad_News_print', 'Trad_News_online', 'Trad_News_TV', 'Trad_News_radio',
+            'SM_News_1', 'SM_News_2', 'SM_News_3', 'SM_News_4', 'SM_News_5', 'SM_News_6',
+            'SM_Sharing'
+        ]
 
-    Returns:
-    - pd.DataFrame: Loaded data.
-    """
-    if not os.path.exists(file_path):
-        logging.error(f"File {file_path} does not exist.")
-        sys.exit(1)
-    
-    try:
-        data = pd.read_csv(file_path)
-        logging.info(f"Data loaded successfully with shape {data.shape}.")
-        return data
-    except Exception as e:
-        logging.error(f"Error loading data: {e}")
-        sys.exit(1)
-
-def clean_data(data):
-    """
-    Clean the survey data by handling missing values and ensuring correct data types.
-
-    Parameters:
-    - data (pd.DataFrame): Raw data.
-
-    Returns:
-    - pd.DataFrame: Cleaned data.
-    """
-    # Identify columns to drop or impute
-    # For simplicity, we'll drop rows with missing values
-    initial_shape = data.shape
-    data = data.dropna()
-    final_shape = data.shape
-    logging.info(f"Dropped {initial_shape[0] - final_shape[0]} rows due to missing values.")
-    
-    # Ensure categorical columns are of type integer
-    categorical_columns = [
-        'News_1',
-        'News_frequency',
-        'Trad_News_print',
-        'Trad_News_online',
-        'Trad_News_TV',
-        'Trad_News_radio',
-        'SM_News_1',
-        'SM_News_2',
-        'SM_News_3',
-        'SM_News_4',
-        'SM_News_5',
-        'SM_News_6',
-        'SM_Sharing'
-    ]
-    
-    for col in categorical_columns:
-        if col in data.columns:
-            data[col] = data[col].astype(int)
-        else:
-            logging.warning(f"Expected column '{col}' not found in data.")
-    
-    return data
-
-def select_features(data):
-    """
-    Select relevant features for clustering.
-
-    Parameters:
-    - data (pd.DataFrame): Cleaned data.
-
-    Returns:
-    - pd.DataFrame: Selected features.
-    """
-    feature_columns = [
-        'News_1',
-        'News_frequency',
-        'Trad_News_print',
-        'Trad_News_online',
-        'Trad_News_TV',
-        'Trad_News_radio',
-        'SM_News_1',
-        'SM_News_2',
-        'SM_News_3',
-        'SM_News_4',
-        'SM_News_5',
-        'SM_News_6',
-        'SM_Sharing'
-    ]
-    
-    missing_features = [col for col in feature_columns if col not in data.columns]
-    if missing_features:
-        logging.error(f"The following required features are missing from the data: {missing_features}")
-        sys.exit(1)
-    
-    features = data[feature_columns]
-    logging.info(f"Selected {features.shape[1]} features for clustering.")
-    return features
-
-def preprocess_features(features):
-    """
-    Normalize the feature data using StandardScaler.
-
-    Parameters:
-    - features (pd.DataFrame): Selected features.
-
-    Returns:
-    - np.ndarray: Normalized feature array.
-    - StandardScaler: Fitted scaler object.
-    """
-    scaler = StandardScaler()
-    scaled_features = scaler.fit_transform(features)
-    logging.info("Features have been standardized (zero mean, unit variance).")
-    return scaled_features, scaler
-
-def determine_optimal_clusters(scaled_features, max_k=10):
-    """
-    Determine the optimal number of clusters using Elbow Method and Silhouette Score.
-
-    Parameters:
-    - scaled_features (np.ndarray): Normalized features.
-    - max_k (int): Maximum number of clusters to test.
-
-    Returns:
-    - int: Optimal number of clusters.
-    """
-    wcss = []
-    silhouette_scores = []
-    
-    logging.info("Determining the optimal number of clusters using Elbow Method and Silhouette Score.")
-    
-    for k in range(2, max_k + 1):
-        kmeans = KMeans(n_clusters=k, random_state=42, n_init=10)
-        kmeans.fit(scaled_features)
-        wcss.append(kmeans.inertia_)
-        score = silhouette_score(scaled_features, kmeans.labels_)
-        silhouette_scores.append(score)
-        logging.info(f"k={k}: WCSS={kmeans.inertia_:.2f}, Silhouette Score={score:.4f}")
-    
-    # Plot Elbow Method
-    plt.figure(figsize=(10, 5))
-    plt.plot(range(2, max_k + 1), wcss, marker='o')
-    plt.title('Elbow Method for Determining Optimal k')
-    plt.xlabel('Number of clusters (k)')
-    plt.ylabel('Within-Cluster Sum of Squares (WCSS)')
-    plt.xticks(range(2, max_k + 1))
-    plt.grid(True)
-    plt.savefig('elbow_method.png')
-    plt.close()
-    logging.info("Elbow Method plot saved as 'elbow_method.png'.")
-    
-    # Plot Silhouette Scores
-    plt.figure(figsize=(10, 5))
-    plt.plot(range(2, max_k + 1), silhouette_scores, marker='o', color='orange')
-    plt.title('Silhouette Scores for Different k')
-    plt.xlabel('Number of clusters (k)')
-    plt.ylabel('Silhouette Score')
-    plt.xticks(range(2, max_k + 1))
-    plt.grid(True)
-    plt.savefig('silhouette_scores.png')
-    plt.close()
-    logging.info("Silhouette Scores plot saved as 'silhouette_scores.png'.")
-    
-    # Determine optimal k (for simplicity, choose k with highest silhouette score)
-    optimal_k = silhouette_scores.index(max(silhouette_scores)) + 2  # since k starts at 2
-    logging.info(f"Optimal number of clusters determined to be k={optimal_k}.")
-    
-    return optimal_k
-
-def perform_clustering(scaled_features, n_clusters):
-    """
-    Perform K-Means clustering.
-
-    Parameters:
-    - scaled_features (np.ndarray): Normalized features.
-    - n_clusters (int): Number of clusters.
-
-    Returns:
-    - KMeans: Fitted KMeans object.
-    - np.ndarray: Cluster labels.
-    """
-    kmeans = KMeans(n_clusters=n_clusters, random_state=42, n_init=10)
-    cluster_labels = kmeans.fit_predict(scaled_features)
-    logging.info(f"K-Means clustering performed with k={n_clusters}.")
-    return kmeans, cluster_labels
-
-def analyze_clusters(data, cluster_labels, output_dir='cluster_analysis'):
-    """
-    Analyze and visualize the clusters.
-
-    Parameters:
-    - data (pd.DataFrame): Original data with features.
-    - cluster_labels (np.ndarray): Assigned cluster labels.
-    - output_dir (str): Directory to save analysis outputs.
-
-    Returns:
-    - pd.DataFrame: Data with cluster labels.
-    """
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        logging.info(f"Created directory '{output_dir}' for analysis outputs.")
-    
-    data_with_clusters = data.copy()
-    data_with_clusters['Cluster'] = cluster_labels
-    
-    # Descriptive statistics
-    cluster_summary = data_with_clusters.groupby('Cluster').mean().reset_index()
-    cluster_summary.to_csv(os.path.join(output_dir, 'cluster_summary.csv'), index=False)
-    logging.info("Cluster summary statistics saved as 'cluster_summary.csv'.")
-    
-    # Save cluster counts
-    cluster_counts = data_with_clusters['Cluster'].value_counts().sort_index()
-    cluster_counts.to_csv(os.path.join(output_dir, 'cluster_counts.csv'), header=['Count'])
-    logging.info("Cluster counts saved as 'cluster_counts.csv'.")
-    
-    # Visualization: Radar Charts for each cluster
-    feature_columns = data.columns.tolist()
-    feature_columns.remove('Define_fake_news_prop')  # Exclude open-ended questions
-    feature_columns.remove('Detect_news_verification')  # Exclude open-ended questions
-    
-    # Normalize for radar chart
-    radar_data = cluster_summary[cluster_summary.columns[1:-1]]
-    radar_data_normalized = (radar_data - radar_data.min()) / (radar_data.max() - radar_data.min())
-    
-    # Radar chart function
-    def plot_radar(row, features, title, save_path):
-        angles = np.linspace(0, 2 * np.pi, len(features), endpoint=False).tolist()
-        angles += angles[:1]
-        values = row.tolist()
-        values += values[:1]
+    def load_data(self) -> pd.DataFrame:
+        """Load and validate survey data"""
+        if not self.file_path.exists():
+            raise FileNotFoundError(f"File {self.file_path} does not exist.")
         
-        plt.figure(figsize=(8, 8))
-        ax = plt.subplot(111, polar=True)
-        plt.xticks(angles[:-1], features, color='grey', size=8)
-        ax.plot(angles, values, linewidth=1, linestyle='solid')
-        ax.fill(angles, values, alpha=0.4)
-        plt.title(title, size=14, y=1.1)
-        plt.savefig(save_path)
-        plt.close()
-    
-    for _, row in cluster_summary.iterrows():
-        cluster = row['Cluster']
-        features = cluster_summary.columns[1:-1]
-        values = radar_data_normalized.iloc[row.name].values
-        plot_radar(
-            row=values,
-            features=features,
-            title=f'Cluster {int(cluster)} Radar Chart',
-            save_path=os.path.join(output_dir, f'cluster_{int(cluster)}_radar.png')
+        try:
+            self.data = pd.read_csv(self.file_path)
+            logging.info(f"Data loaded successfully with shape {self.data.shape}")
+            return self.data
+        except Exception as e:
+            logging.error(f"Error loading data: {e}")
+            raise
+
+    def clean_data(self) -> pd.DataFrame:
+        """Clean and preprocess survey data"""
+        if self.data is None:
+            raise ValueError("Data not loaded. Call load_data() first.")
+
+        # Handle missing values
+        imputer = KNNImputer(n_neighbors=5)
+        self.data[self.feature_columns] = imputer.fit_transform(self.data[self.feature_columns])
+
+        # Convert categorical columns to numeric
+        le = LabelEncoder()
+        for col in self.feature_columns:
+            if self.data[col].dtype == 'object':
+                self.data[col] = le.fit_transform(self.data[col])
+
+        # Remove outliers using Isolation Forest
+        iso_forest = IsolationForest(contamination=0.1, random_state=42)
+        outlier_mask = iso_forest.fit_predict(self.data[self.feature_columns]) == 1
+        self.data = self.data[outlier_mask]
+
+        logging.info(f"Data cleaned. New shape: {self.data.shape}")
+        return self.data
+
+    def normalize_features(self, method: str = 'standard') -> np.ndarray:
+        """Normalize features using specified method"""
+        if method == 'standard':
+            scaler = StandardScaler()
+        elif method == 'robust':
+            scaler = RobustScaler()
+        elif method == 'minmax':
+            scaler = MinMaxScaler()
+        else:
+            raise ValueError("Invalid normalization method")
+
+        self.data_normalized = scaler.fit_transform(self.data[self.feature_columns])
+        return self.data_normalized
+
+    def reduce_dimensions(self, method: str = 'pca', n_components: int = 2) -> np.ndarray:
+        """Reduce dimensionality using specified method"""
+        if method == 'pca':
+            reducer = PCA(n_components=n_components)
+            self.pca_results = reducer.fit_transform(self.data_normalized)
+            return self.pca_results
+        elif method == 'tsne':
+            reducer = TSNE(n_components=n_components, random_state=42)
+            self.tsne_results = reducer.fit_transform(self.data_normalized)
+            return self.tsne_results
+        elif method == 'umap':
+            reducer = umap.UMAP(n_components=n_components, random_state=42)
+            self.umap_results = reducer.fit_transform(self.data_normalized)
+            return self.umap_results
+        else:
+            raise ValueError("Invalid dimension reduction method")
+
+    def find_optimal_clusters(self, max_clusters: int = 15) -> Dict[str, Any]:
+        """Find optimal number of clusters using multiple methods"""
+        results = {}
+        
+        # Elbow method using KMeans
+        inertias = []
+        for k in range(2, max_clusters + 1):
+            kmeans = KMeans(n_clusters=k, random_state=42)
+            kmeans.fit(self.data_normalized)
+            inertias.append(kmeans.inertia_)
+        
+        # Find elbow point
+        kl = KneeLocator(range(2, max_clusters + 1), inertias, curve='convex', direction='decreasing')
+        results['elbow_k'] = kl.elbow
+
+        # Silhouette analysis
+        silhouette_scores = []
+        for k in range(2, max_clusters + 1):
+            kmeans = KMeans(n_clusters=k, random_state=42)
+            labels = kmeans.fit_predict(self.data_normalized)
+            score = silhouette_score(self.data_normalized, labels)
+            silhouette_scores.append(score)
+        
+        results['silhouette_k'] = silhouette_scores.index(max(silhouette_scores)) + 2
+
+        # Gap statistic
+        gap_stats = []
+        for k in range(2, max_clusters + 1):
+            kmeans = KMeans(n_clusters=k, random_state=42)
+            labels = kmeans.fit_predict(self.data_normalized)
+            score = calinski_harabasz_score(self.data_normalized, labels)
+            gap_stats.append(score)
+            
+        results['gap_k'] = gap_stats.index(max(gap_stats)) + 2
+
+        # Plot results
+        self._plot_cluster_metrics(inertias, silhouette_scores, gap_stats)
+        
+        return results
+
+    def perform_clustering(self, method: str = 'kmeans', n_clusters: int = None, **kwargs) -> ClusteringResults:
+        """Perform clustering using specified method"""
+        if n_clusters is None:
+            optimal_clusters = self.find_optimal_clusters()
+            n_clusters = optimal_clusters['silhouette_k']
+
+        if method == 'kmeans':
+            model = KMeans(n_clusters=n_clusters, **kwargs)
+        elif method == 'agglomerative':
+            model = AgglomerativeClustering(n_clusters=n_clusters, **kwargs)
+        elif method == 'dbscan':
+            model = DBSCAN(**kwargs)
+        elif method == 'spectral':
+            model = SpectralClustering(n_clusters=n_clusters, **kwargs)
+        elif method == 'gaussian_mixture':
+            model = GaussianMixture(n_components=n_clusters, **kwargs)
+        else:
+            raise ValueError("Invalid clustering method")
+
+        # Fit model and get labels
+        labels = model.fit_predict(self.data_normalized)
+        self.cluster_labels = labels
+
+        # Calculate validation metrics
+        metrics = {
+            'silhouette': silhouette_score(self.data_normalized, labels),
+            'calinski_harabasz': calinski_harabasz_score(self.data_normalized, labels),
+            'davies_bouldin': davies_bouldin_score(self.data_normalized, labels)
+        }
+
+        # Get cluster centers if available
+        centers = getattr(model, 'cluster_centers_', None)
+
+        # Create results object
+        results = ClusteringResults(
+            labels=labels,
+            metrics=metrics,
+            model=model,
+            timestamp=datetime.datetime.now().isoformat(),
+            parameters=kwargs,
+            validation_scores={'cross_val': cross_val_score(model, self.data_normalized, labels)},
+            cluster_centers=centers
         )
-        logging.info(f"Radar chart for Cluster {int(cluster)} saved as 'cluster_{int(cluster)}_radar.png'.")
-    
-    # Box plots for each feature by cluster
-    for feature in feature_columns:
-        plt.figure(figsize=(10, 6))
-        sns.boxplot(x='Cluster', y=feature, data=data_with_clusters)
-        plt.title(f'Box Plot of {feature} by Cluster')
-        plt.savefig(os.path.join(output_dir, f'boxplot_{feature}.png'))
-        plt.close()
-        logging.info(f"Box plot for '{feature}' saved as 'boxplot_{feature}.png'.")
-    
-    return data_with_clusters
 
-def save_clustered_data(data_with_clusters, output_file='clustered_survey_data.csv'):
-    """
-    Save the clustered data to a CSV file.
+        self.clustering_history.append(results)
+        return results
 
-    Parameters:
-    - data_with_clusters (pd.DataFrame): Data with cluster labels.
-    - output_file (str): Output CSV file name.
-    """
-    data_with_clusters.to_csv(output_file, index=False)
-    logging.info(f"Clustered data saved as '{output_file}'.")
+    def analyze_clusters(self, output_dir: str = 'cluster_analysis') -> None:
+        """Analyze and visualize clustering results"""
+        os.makedirs(output_dir, exist_ok=True)
+
+        # Add cluster labels to original data
+        data_with_clusters = self.data.copy()
+        data_with_clusters['Cluster'] = self.cluster_labels
+
+        # Generate cluster profiles
+        profiles = self._generate_cluster_profiles(data_with_clusters)
+        profiles.to_csv(os.path.join(output_dir, 'cluster_profiles.csv'))
+
+        # Create visualizations
+        self._plot_cluster_distributions(data_with_clusters, output_dir)
+        self._plot_feature_importance(data_with_clusters, output_dir)
+        self._plot_cluster_correlations(data_with_clusters, output_dir)
+        self._create_interactive_visualizations(data_with_clusters, output_dir)
+
+        # Statistical analysis
+        stats = self._perform_statistical_tests(data_with_clusters)
+        with open(os.path.join(output_dir, 'statistical_analysis.json'), 'w') as f:
+            json.dump(stats, f, indent=4)
+
+    def _generate_cluster_profiles(self, data: pd.DataFrame) -> pd.DataFrame:
+        """Generate detailed profiles for each cluster"""
+        profiles = []
+        for cluster in range(len(np.unique(self.cluster_labels))):
+            cluster_data = data[data['Cluster'] == cluster]
+            profile = {
+                'Cluster': cluster,
+                'Size': len(cluster_data),
+                'Percentage': len(cluster_data) / len(data) * 100
+            }
+            
+            # Add feature statistics
+            for col in self.feature_columns:
+                profile[f'{col}_mean'] = cluster_data[col].mean()
+                profile[f'{col}_std'] = cluster_data[col].std()
+                profile[f'{col}_median'] = cluster_data[col].median()
+            
+            profiles.append(profile)
+            
+        return pd.DataFrame(profiles)
+
+    def _plot_cluster_metrics(self, inertias: List[float], silhouette_scores: List[float], 
+                            gap_stats: List[float]) -> None:
+        """Plot cluster evaluation metrics"""
+        fig = make_subplots(rows=1, cols=3, 
+                           subplot_titles=('Elbow Method', 'Silhouette Score', 'Gap Statistic'))
+        
+        k_range = list(range(2, len(inertias) + 2))
+        
+        # Elbow plot
+        fig.add_trace(go.Scatter(x=k_range, y=inertias, mode='lines+markers'), row=1, col=1)
+        
+        # Silhouette plot
+        fig.add_trace(go.Scatter(x=k_range, y=silhouette_scores, mode='lines+markers'), row=1, col=2)
+        
+        # Gap statistic plot
+        fig.add_trace(go.Scatter(x=k_range, y=gap_stats, mode='lines+markers'), row=1, col=3)
+        
+        fig.update_layout(height=400, width=1200, title_text="Cluster Evaluation Metrics")
+        fig.write_html('cluster_metrics.html')
+
+    def _plot_cluster_distributions(self, data: pd.DataFrame, output_dir: str) -> None:
+        """Plot distribution of features across clusters"""
+        for feature in self.feature_columns:
+            fig = px.box(data, x='Cluster', y=feature, title=f'{feature} Distribution by Cluster')
+            fig.write_html(os.path.join(output_dir, f'{feature}_distribution.html'))
+
+    def _plot_feature_importance(self, data: pd.DataFrame, output_dir: str) -> None:
+        """Plot feature importance for clustering"""
+        importances = {}
+        for feature in self.feature_columns:
+            f_stat, p_value = f_oneway(*[group[feature].values 
+                                       for name, group in data.groupby('Cluster')])
+            importances[feature] = -np.log10(p_value)
+
+        fig = px.bar(x=list(importances.keys()), y=list(importances.values()),
+                    title='Feature Importance (-log10(p-value))')
+        fig.write_html(os.path.join(output_dir, 'feature_importance.html'))
+
+    def _plot_cluster_correlations(self, data: pd.DataFrame, output_dir: str) -> None:
+        """Plot correlation matrix for each cluster"""
+        for cluster in data['Cluster'].unique():
+            cluster_data = data[data['Cluster'] == cluster]
+            corr_matrix = cluster_data[self.feature_columns].corr()
+            
+            fig = px.imshow(corr_matrix, title=f'Correlation Matrix - Cluster {cluster}')
+            fig.write_html(os.path.join(output_dir, f'correlation_matrix_cluster_{cluster}.html'))
+
+    def _create_interactive_visualizations(self, data: pd.DataFrame, output_dir: str) -> None:
+        """Create interactive visualizations of clustering results"""
+        # 3D scatter plot using PCA
+        pca = PCA(n_components=3)
+        pca_results = pca.fit_transform(self.data_normalized)
+        
+        fig = px.scatter_3d(
+            data_frame=pd.DataFrame(pca_results, columns=['PC1', 'PC2', 'PC3']),
+            x='PC1', y='PC2', z='PC3',
+            color=data['Cluster'].astype(str),
+            title='3D Cluster Visualization (PCA)'
+        )
+        fig.write_html(os.path.join(output_dir, 'cluster_3d_visualization.html'))
+
+    def _perform_statistical_tests(self, data: pd.DataFrame) -> Dict[str, Any]:
+        """Perform statistical tests on clusters"""
+        stats = {}
+        
+        # Chi-square tests for categorical variables
+        for feature in self.feature_columns:
+            contingency_table = pd.crosstab(data['Cluster'], data[feature])
+            chi2, p_value, dof, expected = chi2_contingency(contingency_table)
+            stats[feature] = {
+                'chi2': chi2,
+                'p_value': p_value,
+                'dof': dof
+            }
+            
+        # Kruskal-Wallis H-test for continuous variables
+        for feature in self.feature_columns:
+            h_stat, p_value = kruskal(*[group[feature].values 
+                                      for name, group in data.groupby('Cluster')])
+            stats[f'{feature}_kruskal'] = {
+                'h_statistic': h_stat,
+                'p_value': p_value
+            }
+            
+        return stats
 
 def main():
-    # File paths
-    input_file = 'survey_data.csv'
-    clustered_output_file = 'clustered_survey_data.csv'
-    analysis_output_dir = 'cluster_analysis'
+    # Initialize analysis
+    analyzer = ClusterAnalysis('survey_data.csv')
     
-    # Load data
-    data = load_data(input_file)
+    # Load and prepare data
+    analyzer.load_data()
+    analyzer.clean_data()
+    analyzer.normalize_features(method='robust')
     
-    # Clean data
-    data_clean = clean_data(data)
+    # Perform dimensionality reduction
+    analyzer.reduce_dimensions(method='umap')
     
-    # Select features
-    features = select_features(data_clean)
+    # Find optimal clusters
+    optimal_clusters = analyzer.find_optimal_clusters(max_clusters=15)
     
-    # Preprocess features
-    scaled_features, scaler = preprocess_features(features)
+    # Perform clustering with multiple methods
+    results_kmeans = analyzer.perform_clustering(method='kmeans', 
+                                               n_clusters=optimal_clusters['silhouette_k'])
+    results_spectral = analyzer.perform_clustering(method='spectral', 
+                                                 n_clusters=optimal_clusters['silhouette_k'])
+    results_agglomerative = analyzer.perform_clustering(method='agglomerative', 
+                                                      n_clusters=optimal_clusters['silhouette_k'])
     
-    # Determine optimal number of clusters
-    optimal_k = determine_optimal_clusters(scaled_features, max_k=10)
+    # Analyze best clustering results (using highest silhouette score)
+    best_results = max([results_kmeans, results_spectral, results_agglomerative],
+                      key=lambda x: x.metrics['silhouette'])
+    analyzer.cluster_labels = best_results.labels
     
-    # Perform clustering
-    kmeans_model, cluster_labels = perform_clustering(scaled_features, n_clusters=optimal_k)
+    # Generate analysis
+    analyzer.analyze_clusters(output_dir='cluster_analysis_results')
     
-    # Analyze clusters
-    data_with_clusters = analyze_clusters(data_clean, cluster_labels, output_dir=analysis_output_dir)
-    
-    # Save clustered data
-    save_clustered_data(data_with_clusters, output_file=clustered_output_file)
-    
-    logging.info("Clustering and analysis completed successfully.")
+    logging.info("Cluster analysis completed successfully")
 
 if __name__ == "__main__":
     main()
