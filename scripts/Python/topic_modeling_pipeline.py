@@ -774,3 +774,207 @@ class TopicModelingPipeline:
         except Exception as e:
             logging.error(f"Error calculating distances: {str(e)}")
             return np.zeros((num_topics, num_topics))
+
+    def train_models(self) -> Dict[int, LdaModel]:
+        """Train LDA models for different numbers of topics"""
+        try:
+            if self.corpus is None or self.dictionary is None:
+                raise ValueError("Corpus and dictionary must be prepared first")
+
+            min_topics, max_topics = self.num_topics_range
+            
+            for num_topics in range(min_topics, max_topics + 1):
+                self.logger.info(f"Training model with {num_topics} topics...")
+                
+                # Train LDA model with progress tracking
+                model = LdaModel(
+                    corpus=self.corpus,
+                    id2word=self.dictionary,
+                    num_topics=num_topics,
+                    random_state=self.random_state,
+                    alpha='auto',
+                    per_word_topics=True,
+                    callbacks=[
+                        # PerplexityMetric(corpus=self.corpus),  # Commented out as it's not defined
+                        # CoherenceMetric(
+                        #     corpus=self.corpus,
+                        #     coherence='c_v'
+                        # )
+                    ]
+                )
+                
+                # Calculate topic metrics
+                topic_metrics = {}
+                for topic_id in range(num_topics):
+                    # Get topic words and probabilities
+                    topic_terms = model.show_topic(topic_id, topn=50)
+                    words, probs = zip(*topic_terms)
+                    
+                    # Calculate metrics
+                    topic_metrics[topic_id] = {
+                        'words': {
+                            10: words[:10],
+                            20: words[:20],
+                            50: words[:50]
+                        },
+                        'probabilities': {
+                            10: probs[:10],
+                            20: probs[:20],
+                            50: probs[:50]
+                        },
+                        'metrics': {
+                            'entropy': self._calculate_topic_entropy(topic_terms),
+                            'distinctiveness': self._calculate_topic_distinctiveness(
+                                model, topic_id, num_topics
+                            ),
+                            'coherence': self._calculate_topic_coherence(
+                                model, topic_id, self.corpus
+                            )
+                        }
+                    }
+                
+                # Calculate topic distances
+                distances = {
+                    'hellinger': self._calculate_topic_distances(
+                        model, num_topics, metric='hellinger'
+                    ),
+                    'jensen_shannon': self._calculate_topic_distances(
+                        model, num_topics, metric='jensen_shannon'
+                    )
+                }
+                
+                # Calculate average distances
+                avg_distances = {
+                    metric: np.mean(dist[np.triu_indices_from(dist, k=1)])
+                    for metric, dist in distances.items()
+                }
+                
+                # Store model and metrics
+                self.models[num_topics] = {
+                    'model': model,
+                    'topics': topic_metrics,
+                    'distances': distances,
+                    'avg_distances': avg_distances
+                }
+                
+                # Save model
+                model_path = self.output_dir / f'lda_model_{num_topics}.pkl'
+                model.save(str(model_path))
+                
+                self.logger.info(f"Saved model with {num_topics} topics to {model_path}")
+                
+            return self.models
+            
+        except Exception as e:
+            error_msg = f"Error training models: {str(e)}\n{traceback.format_exc()}"
+            self.logger.error(error_msg)
+            raise ModelTrainingError(error_msg)
+
+    def analyze_topics(self) -> Dict:
+        """Analyze trained topic models and generate insights"""
+        try:
+            if not self.models:
+                raise ValueError("No trained models available")
+                
+            self.analysis = {}
+            
+            for num_topics, model_info in self.models.items():
+                model = model_info['model']
+                
+                # Document-topic distribution analysis
+                doc_topics = [
+                    model.get_document_topics(doc, minimum_probability=0.0)
+                    for doc in self.corpus
+                ]
+                
+                # Convert to dense matrix for analysis
+                doc_topic_matrix = np.zeros((len(self.corpus), num_topics))
+                for i, doc in enumerate(doc_topics):
+                    for topic_id, prob in doc:
+                        doc_topic_matrix[i, topic_id] = prob
+                        
+                # Calculate topic prevalence
+                topic_prevalence = doc_topic_matrix.mean(axis=0)
+                
+                # Calculate topic diversity (average number of topics per document)
+                topic_diversity = np.mean([
+                    len([p for p in doc if p[1] > 0.1])
+                    for doc in doc_topics
+                ])
+                
+                # Store analysis results
+                self.analysis[num_topics] = {
+                    'topic_prevalence': topic_prevalence.tolist(),
+                    'topic_diversity': topic_diversity,
+                    'topics': model_info['topics'],
+                    'distances': model_info['distances'],
+                    'avg_distances': model_info['avg_distances']
+                }
+                
+            return self.analysis
+            
+        except Exception as e:
+            error_msg = f"Error analyzing topics: {str(e)}\n{traceback.format_exc()}"
+            self.logger.error(error_msg)
+            raise AnalysisError(error_msg)
+
+    def save_results(self) -> None:
+        """Save analysis results and visualizations"""
+        try:
+            if self.analysis is None:
+                raise ValueError("No analysis results available")
+                
+            # Create output directories
+            plots_dir = self.output_dir / 'plots'
+            tables_dir = self.output_dir / 'tables'
+            for dir_path in [plots_dir, tables_dir]:
+                dir_path.mkdir(exist_ok=True)
+                
+            # Save model comparison metrics
+            metrics_data = []
+            for num_topics, results in self.analysis.items():
+                metrics = {
+                    'num_topics': num_topics,
+                    'topic_diversity': results['topic_diversity']
+                }
+                metrics.update({
+                    f'topic_{i}_prevalence': prev
+                    for i, prev in enumerate(results['topic_prevalence'])
+                })
+                metrics_data.append(metrics)
+                
+            metrics_df = pd.DataFrame(metrics_data)
+            metrics_path = tables_dir / 'model_metrics.csv'
+            metrics_df.to_csv(metrics_path, index=False)
+            
+            # Save detailed topic information
+            for num_topics, results in self.analysis.items():
+                topic_data = []
+                for topic_id, topic_info in results['topics'].items():
+                    topic_metrics = topic_info['metrics']
+                    
+                    for n_words in [10, 20, 50]:
+                        topic_data.append({
+                            'topic_id': topic_id,
+                            'num_words': n_words,
+                            'words': ', '.join(topic_info['words'][n_words]),
+                            'word_probabilities': topic_info['probabilities'][n_words],
+                            'entropy': topic_metrics['entropy'],
+                            'distinctiveness': topic_metrics['distinctiveness'],
+                            'coherence': topic_metrics['coherence']
+                        })
+                        
+                topic_df = pd.DataFrame(topic_data)
+                topic_path = tables_dir / f'topics_{num_topics}.csv'
+                topic_df.to_csv(topic_path, index=False)
+                
+            # Generate visualizations
+            self._visualize_topics(plots_dir)
+            self._create_wordclouds(plots_dir)
+            
+            self.logger.info(f"Successfully saved all results to {self.output_dir}")
+            
+        except Exception as e:
+            error_msg = f"Error saving results: {str(e)}\n{traceback.format_exc()}"
+            self.logger.error(error_msg)
+            raise RuntimeError(error_msg)

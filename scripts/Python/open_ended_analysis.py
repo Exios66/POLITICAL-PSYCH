@@ -3,96 +3,170 @@ import logging
 import sys
 import traceback
 import nltk
-from nltk.tokenize import sent_tokenize
+from nltk.tokenize import sent_tokenize, word_tokenize
+from nltk.corpus import stopwords
+from nltk.sentiment import SentimentIntensityAnalyzer
+from collections import Counter
+from typing import Dict, List, Tuple, Union
 
 # Download necessary NLTK data files
 nltk.download('punkt')
+nltk.download('stopwords')
+nltk.download('vader_lexicon')
 
 # Configure logging
 logging.basicConfig(
     level=logging.DEBUG,
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('open_ended_analysis.log')
     ]
 )
 
-def evaluate_open_response(response):
+logger = logging.getLogger(__name__)
+
+def evaluate_open_response(response: str) -> Dict[str, Union[int, List[str], float]]:
     """
-    Evaluate an open-ended response based on the number of distinct steps provided.
+    Evaluate an open-ended response based on multiple metrics including:
+    - Number of distinct steps
+    - Key themes/topics
+    - Sentiment analysis
+    - Response complexity
 
     Parameters:
     - response (str): The response describing verification steps.
 
     Returns:
-    - int: Number of distinct steps mentioned in the response.
+    - Dict containing analysis metrics:
+        - steps_count: Number of distinct steps
+        - key_themes: List of main themes identified
+        - sentiment_score: Overall sentiment score
+        - complexity_score: Measure of response complexity
     """
-    # Split the response into sentences using NLTK's sentence tokenizer for more accuracy
-    sentences = sent_tokenize(response)
-    steps_count = 0
+    try:
+        # Initialize sentiment analyzer
+        sia = SentimentIntensityAnalyzer()
+        
+        # Split into sentences and words
+        sentences = sent_tokenize(response)
+        words = word_tokenize(response.lower())
+        
+        # Remove stopwords
+        stop_words = set(stopwords.words('english'))
+        words = [w for w in words if w not in stop_words and w.isalnum()]
+        
+        # Count distinct steps
+        steps_count = len(sentences)
+        
+        # Identify key themes (most common meaningful words)
+        word_freq = Counter(words)
+        key_themes = [word for word, count in word_freq.most_common(5)]
+        
+        # Calculate sentiment
+        sentiment_scores = sia.polarity_scores(response)
+        sentiment_score = sentiment_scores['compound']
+        
+        # Calculate complexity score based on:
+        # - Average sentence length
+        # - Vocabulary diversity
+        # - Number of steps
+        avg_sent_length = len(words) / len(sentences)
+        vocab_diversity = len(set(words)) / len(words)
+        complexity_score = (avg_sent_length * 0.3) + (vocab_diversity * 0.4) + (steps_count * 0.3)
+        
+        results = {
+            'steps_count': steps_count,
+            'key_themes': key_themes,
+            'sentiment_score': sentiment_score,
+            'complexity_score': round(complexity_score, 2)
+        }
+        
+        logger.info(f"Response analysis complete: {results}")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in evaluate_open_response: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
-    # Iterate over sentences and evaluate if each describes a distinct verification step
-    for sentence in sentences:
-        # Check if sentence has meaningful content
-        if sentence.strip():
-            # Increment steps count (assuming each meaningful sentence is a distinct step)
-            steps_count += 1
-            logging.debug(f"Identified step: {sentence.strip()}")
-
-    logging.info(f"Total number of distinct steps identified: {steps_count}")
-    return steps_count
-
-def compare_news_habits(news_source, news_frequency):
+def compare_news_habits(news_source: int, news_frequency: int, 
+                       additional_sources: List[int] = None) -> Dict[str, str]:
     """
-    Compare the news source and frequency to draw some inference about news consumption habits.
+    Compare news consumption habits and provide detailed analysis.
 
     Parameters:
-    - news_source (int): The selected news source (1-6).
-    - news_frequency (int): The time devoted to news each day (1-4).
+    - news_source (int): Primary news source (1-6)
+    - news_frequency (int): Time devoted to news daily (1-4)
+    - additional_sources (List[int], optional): Secondary news sources
 
     Returns:
-    - str: Summary evaluation of news habits.
+    - Dict containing:
+        - evaluation: Overall evaluation
+        - diversity_score: Source diversity assessment
+        - recommendations: Suggested improvements
     """
-    # Define news source and frequency interpretations
-    sources = {
-        1: 'Print newspapers',
-        2: 'Television',
-        3: 'News websites',
-        4: 'Social media',
-        5: 'Radio',
-        6: 'Podcasts'
-    }
-    frequencies = {
-        1: 'Fewer than 30 minutes',
-        2: 'Between 30 minutes and 1 hour',
-        3: 'Between 1 and 2 hours',
-        4: 'More than 2 hours'
-    }
+    try:
+        sources = {
+            1: 'Print newspapers',
+            2: 'Television',
+            3: 'News websites',
+            4: 'Social media',
+            5: 'Radio',
+            6: 'Podcasts'
+        }
+        
+        frequencies = {
+            1: 'Fewer than 30 minutes',
+            2: 'Between 30 minutes and 1 hour',
+            3: 'Between 1 and 2 hours',
+            4: 'More than 2 hours'
+        }
 
-    # Validate inputs
-    if news_source not in sources:
-        logging.error(f"Invalid news source value: {news_source}")
-        return "Invalid news source provided."
-    if news_frequency not in frequencies:
-        logging.error(f"Invalid news frequency value: {news_frequency}")
-        return "Invalid news frequency provided."
+        # Validate inputs
+        if news_source not in sources:
+            raise ValueError(f"Invalid news source value: {news_source}")
+        if news_frequency not in frequencies:
+            raise ValueError(f"Invalid news frequency value: {news_frequency}")
 
-    source = sources.get(news_source)
-    frequency = frequencies.get(news_frequency)
-
-    logging.info(f"News Source: {source}")
-    logging.info(f"News Frequency: {frequency}")
-
-    # Basic evaluation logic
-    if news_source in [3, 4] and news_frequency >= 3:
-        evaluation = "High engagement with digital news sources."
-    elif news_source in [1, 2, 5, 6] and news_frequency <= 2:
-        evaluation = "Moderate engagement with traditional news sources."
-    else:
-        evaluation = "Mixed engagement with news sources."
-
-    logging.info(f"Evaluation of news habits: {evaluation}")
-    return evaluation
+        source = sources[news_source]
+        frequency = frequencies[news_frequency]
+        
+        # Calculate source diversity score
+        source_count = 1
+        if additional_sources:
+            source_count += len(set(additional_sources))
+        diversity_score = min(source_count / len(sources), 1.0)
+        
+        # Generate evaluation
+        if news_source in [3, 4] and news_frequency >= 3:
+            evaluation = "High engagement with digital news sources."
+            recommendations = "Consider incorporating more traditional sources for balance."
+        elif news_source in [1, 2, 5, 6] and news_frequency <= 2:
+            evaluation = "Moderate engagement with traditional news sources."
+            recommendations = "Consider increasing news consumption and exploring digital sources."
+        else:
+            evaluation = "Mixed engagement with news sources."
+            recommendations = "Focus on maintaining diverse news diet while increasing engagement."
+            
+        if diversity_score < 0.3:
+            recommendations += " Strongly recommend diversifying news sources."
+        
+        results = {
+            'evaluation': evaluation,
+            'diversity_score': f"{diversity_score:.2f}",
+            'recommendations': recommendations,
+            'primary_source': source,
+            'frequency': frequency
+        }
+        
+        logger.info(f"News habits analysis complete: {results}")
+        return results
+        
+    except Exception as e:
+        logger.error(f"Error in compare_news_habits: {str(e)}")
+        logger.error(traceback.format_exc())
+        raise
 
 def main():
     try:
@@ -103,33 +177,39 @@ def main():
             "Finally, I check the comments and discussions on social media to get different perspectives."
         )
         
-        # Evaluate response
-        steps_count = evaluate_open_response(response)
+        # Analyze open-ended response
+        response_analysis = evaluate_open_response(response)
         
-        # Example news source and frequency inputs with validation
+        # Example news consumption analysis
         news_source = 3  # News websites
         news_frequency = 4  # More than 2 hours
-
-        # Validate inputs before calling compare_news_habits
-        if news_source not in range(1, 7):
-            logging.error(f"Invalid news source value: {news_source}")
-            print("Invalid news source provided.")
-            return
-        if news_frequency not in range(1, 5):
-            logging.error(f"Invalid news frequency value: {news_frequency}")
-            print("Invalid news frequency provided.")
-            return
+        additional_sources = [2, 4]  # TV and social media
         
-        # Compare news habits
-        evaluation = compare_news_habits(news_source, news_frequency)
+        # Analyze news habits
+        habits_analysis = compare_news_habits(
+            news_source, 
+            news_frequency,
+            additional_sources
+        )
 
         # Output results
-        print(f"Number of distinct steps identified: {steps_count}")
-        print(f"Evaluation of news habits: {evaluation}")
+        print("\nOpen Response Analysis:")
+        print(f"Steps identified: {response_analysis['steps_count']}")
+        print(f"Key themes: {', '.join(response_analysis['key_themes'])}")
+        print(f"Sentiment score: {response_analysis['sentiment_score']:.2f}")
+        print(f"Complexity score: {response_analysis['complexity_score']}")
+        
+        print("\nNews Habits Analysis:")
+        print(f"Primary source: {habits_analysis['primary_source']}")
+        print(f"Frequency: {habits_analysis['frequency']}")
+        print(f"Source diversity score: {habits_analysis['diversity_score']}")
+        print(f"Evaluation: {habits_analysis['evaluation']}")
+        print(f"Recommendations: {habits_analysis['recommendations']}")
 
     except Exception as e:
-        logging.error("An error occurred in open_ended_analysis.py.")
-        logging.error(traceback.format_exc())
+        logger.error("An error occurred in open_ended_analysis.py")
+        logger.error(traceback.format_exc())
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()

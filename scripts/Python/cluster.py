@@ -1,10 +1,19 @@
+# Standard library imports
 import json
 import logging
 import traceback
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import sys
+import os
+import re
+import string
+import warnings
 from datetime import datetime
+from typing import List, Tuple, Dict, Any, Optional, Union, Callable
+from concurrent.futures import ThreadPoolExecutor
+from threading import Lock
+from dataclasses import dataclass, field
 
 import joblib
 import numpy as np
@@ -33,6 +42,24 @@ from sklearn.metrics import davies_bouldin_score, fowlkes_mallows_score
 import plotly.express as px
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
+import pyLDAvis
+import pyLDAvis.gensim_models
+from pyLDAvis import prepare as prepare_lda
+from wordcloud import WordCloud, STOPWORDS, ImageColorGenerator
+
+# SpaCy
+import spacy
+from spacy.tokens import Doc, Token, Span
+from spacy.language import Language
+from spacy.pipeline import EntityRuler
+from spacy.matcher import Matcher, PhraseMatcher
+
+# Sentiment analysis
+from textblob import TextBlob
+from textblob.sentiments import NaiveBayesAnalyzer
+from vaderSentiment.vaderSentiment import SentimentIntensityAnalyzer
+
+# Dimensionality reduction
 import umap.umap_ as umap
 from statsmodels.stats.multitest import multipletests
 from scipy import stats
@@ -934,9 +961,8 @@ class ClusterAnalysisGUI:
                     IQR = Q3 - Q1
                     self.cleaned_data = self.cleaned_data[
                         ~((self.cleaned_data < (Q1 - 1.5 * IQR)) | 
-                          (self.cleaned_data > (Q3 + 1.5 * IQR))).any(axis=1)
-                    ]
-                self.progress_var.set(66)
+                          (self.cleaned_data > (Q3 + 1.5 * IQR))).any(axis=1)]
+                    self.progress_var.set(66)
 
     def update_plot_options(self, *args):
         """Update visible options based on selected plot type"""
@@ -1213,6 +1239,609 @@ class ClusterAnalysisGUI:
             self.status_var.set(f"Error: {str(e)}")
             messagebox.showerror("Error", f"Data processing failed: {str(e)}")
             self.progress_var.set(0)
+
+    def browse_file(self):
+        """Open file dialog to select input data file"""
+        try:
+            filetypes = (
+                ('CSV files', '*.csv'),
+                ('Excel files', '*.xlsx'),
+                ('All files', '*.*')
+            )
+            
+            filename = filedialog.askopenfilename(
+                title='Select data file',
+                initialdir='.',
+                filetypes=filetypes
+            )
+            
+            if filename:
+                self.file_path.set(filename)
+                self.logger.info(f"Selected file: {filename}")
+                
+                # Clear any previous data
+                self.cleaned_data = None
+                self.normalized_data = None
+                self.cluster_labels = None
+                
+                # Clear preview
+                self.preview_text.delete(1.0, tk.END)
+                self.preview_text.insert(tk.END, "Please process the data to see preview.")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to browse file: {str(e)}")
+            messagebox.showerror("Error", f"Failed to open file browser: {str(e)}")
+
+    def update_cluster_options(self, *args):
+        """Update clustering options based on selected method"""
+        try:
+            method = self.cluster_method.get()
+            
+            # Hide all parameter frames
+            for frame in [self.kmeans_frame, self.dbscan_frame, self.hierarchical_frame]:
+                if hasattr(self, frame.__str__()):
+                    frame.pack_forget()
+            
+            # Show relevant parameter frame
+            if method == "kmeans":
+                self.create_kmeans_frame()
+                self.kmeans_frame.pack(fill=tk.X, padx=5, pady=5)
+            elif method == "dbscan":
+                self.create_dbscan_frame()
+                self.dbscan_frame.pack(fill=tk.X, padx=5, pady=5)
+            elif method == "hierarchical":
+                self.create_hierarchical_frame()
+                self.hierarchical_frame.pack(fill=tk.X, padx=5, pady=5)
+                
+            self.logger.info(f"Updated clustering options for method: {method}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update clustering options: {str(e)}")
+            messagebox.showerror("Error", f"Failed to update options: {str(e)}")
+
+    def create_kmeans_frame(self):
+        """Create frame for K-means clustering options"""
+        try:
+            if not hasattr(self, 'kmeans_frame'):
+                self.kmeans_frame = ttk.LabelFrame(self.cluster_frame, text="K-means Parameters")
+            
+            # Clear existing widgets
+            for widget in self.kmeans_frame.winfo_children():
+                widget.destroy()
+            
+            # Number of clusters
+            clusters_frame = ttk.Frame(self.kmeans_frame)
+            clusters_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(clusters_frame, text="Number of clusters (k):").pack(side=tk.LEFT)
+            ttk.Entry(
+                clusters_frame,
+                textvariable=self.n_clusters,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Maximum iterations
+            iter_frame = ttk.Frame(self.kmeans_frame)
+            iter_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(iter_frame, text="Maximum iterations:").pack(side=tk.LEFT)
+            ttk.Entry(
+                iter_frame,
+                textvariable=self.max_iter,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Number of initializations
+            init_frame = ttk.Frame(self.kmeans_frame)
+            init_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(init_frame, text="Number of initializations:").pack(side=tk.LEFT)
+            ttk.Entry(
+                init_frame,
+                textvariable=self.n_init,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            self.logger.info("Created K-means parameter frame")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create K-means frame: {str(e)}")
+            raise
+
+    def create_dbscan_frame(self):
+        """Create frame for DBSCAN clustering options"""
+        try:
+            if not hasattr(self, 'dbscan_frame'):
+                self.dbscan_frame = ttk.LabelFrame(self.cluster_frame, text="DBSCAN Parameters")
+            
+            # Clear existing widgets
+            for widget in self.dbscan_frame.winfo_children():
+                widget.destroy()
+            
+            # Epsilon parameter
+            eps_frame = ttk.Frame(self.dbscan_frame)
+            eps_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(eps_frame, text="Epsilon (ε):").pack(side=tk.LEFT)
+            ttk.Entry(
+                eps_frame,
+                textvariable=self.eps,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Minimum samples
+            min_samples_frame = ttk.Frame(self.dbscan_frame)
+            min_samples_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(min_samples_frame, text="Minimum samples:").pack(side=tk.LEFT)
+            ttk.Entry(
+                min_samples_frame,
+                textvariable=self.min_samples,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Add epsilon estimation button
+            ttk.Button(
+                self.dbscan_frame,
+                text="Estimate Epsilon",
+                command=self.estimate_epsilon
+            ).pack(padx=5, pady=5)
+            
+            self.logger.info("Created DBSCAN parameter frame")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create DBSCAN frame: {str(e)}")
+            raise
+
+    def create_hierarchical_frame(self):
+        """Create frame for hierarchical clustering options"""
+        try:
+            if not hasattr(self, 'hierarchical_frame'):
+                self.hierarchical_frame = ttk.LabelFrame(self.cluster_frame, text="Hierarchical Parameters")
+            
+            # Clear existing widgets
+            for widget in self.hierarchical_frame.winfo_children():
+                widget.destroy()
+            
+            # Number of clusters
+            clusters_frame = ttk.Frame(self.hierarchical_frame)
+            clusters_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(clusters_frame, text="Number of clusters:").pack(side=tk.LEFT)
+            ttk.Entry(
+                clusters_frame,
+                textvariable=self.n_clusters_hierarchical,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Linkage method
+            linkage_frame = ttk.Frame(self.hierarchical_frame)
+            linkage_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(linkage_frame, text="Linkage method:").pack(side=tk.LEFT)
+            ttk.OptionMenu(
+                linkage_frame,
+                self.linkage,
+                "ward",
+                "ward", "complete", "average", "single"
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Add dendrogram button
+            ttk.Button(
+                self.hierarchical_frame,
+                text="Show Dendrogram",
+                command=self.show_dendrogram
+            ).pack(padx=5, pady=5)
+            
+            self.logger.info("Created hierarchical clustering parameter frame")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create hierarchical frame: {str(e)}")
+            raise
+
+    def save_clustering_results(self):
+        """Save clustering results to file"""
+        try:
+            if self.normalized_data is None or self.cluster_labels is None:
+                raise ValueError("No clustering results available")
+                
+            # Create results directory if it doesn't exist
+            results_dir = self.results_dir / datetime.now().strftime('%Y%m%d_%H%M%S')
+            results_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save cluster assignments
+            results_df = self.normalized_data.copy()
+            results_df['Cluster'] = self.cluster_labels
+            
+            cluster_file = results_dir / 'cluster_assignments.csv'
+            results_df.to_csv(cluster_file, index=False)
+            
+            # Calculate cluster statistics
+            cluster_stats = pd.DataFrame({
+                'Size': pd.Series(self.cluster_labels).value_counts(),
+                'Percentage': pd.Series(self.cluster_labels).value_counts(normalize=True) * 100
+            })
+            
+            stats_file = results_dir / 'cluster_statistics.csv'
+            cluster_stats.to_csv(stats_file)
+            
+            # Calculate feature importance
+            if hasattr(self, 'importance_results'):
+                importance_file = results_dir / 'feature_importance.csv'
+                self.importance_results['importances'].to_csv(importance_file, index=False)
+            
+            # Save clustering parameters
+            params = {
+                'method': self.cluster_method.get(),
+                'parameters': self._get_clustering_parameters(),
+                'metrics': {
+                    'silhouette': silhouette_score(
+                        self.normalized_data, 
+                        self.cluster_labels
+                    ),
+                    'calinski_harabasz': calinski_harabasz_score(
+                        self.normalized_data, 
+                        self.cluster_labels
+                    ),
+                    'davies_bouldin': davies_bouldin_score(
+                        self.normalized_data, 
+                        self.cluster_labels
+                    )
+                },
+                'timestamp': datetime.now().isoformat()
+            }
+            
+            params_file = results_dir / 'clustering_parameters.json'
+            with open(params_file, 'w') as f:
+                json.dump(params, f, indent=4)
+                
+            # Generate detailed report
+            report = [
+                "# Clustering Analysis Report",
+                f"\nDate: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                f"\n## Method: {self.cluster_method.get()}",
+                "\n## Parameters:",
+                json.dumps(self._get_clustering_parameters(), indent=2),
+                "\n## Results:",
+                f"\nTotal samples: {len(self.normalized_data)}",
+                f"\nNumber of clusters: {len(np.unique(self.cluster_labels))}",
+                "\n### Cluster Sizes:",
+                cluster_stats.to_string(),
+                "\n### Evaluation Metrics:",
+                json.dumps(params['metrics'], indent=2)
+            ]
+            
+            report_file = results_dir / 'detailed_report.md'
+            with open(report_file, 'w') as f:
+                f.write('\n'.join(report))
+                
+            # Save visualizations if they exist
+            if hasattr(self, 'current_plot'):
+                viz_dir = results_dir / 'visualizations'
+                viz_dir.mkdir(exist_ok=True)
+                
+                # Save current plot
+                plot_file = viz_dir / f'cluster_visualization.png'
+                self.current_plot.savefig(plot_file, dpi=300, bbox_inches='tight')
+                
+                # Generate additional visualizations
+                self._save_additional_visualizations(viz_dir)
+            
+            self.status_var.set(f"Results saved to {results_dir}")
+            self.logger.info(f"Clustering results saved to {results_dir}")
+            messagebox.showinfo("Success", f"Results saved to {results_dir}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save clustering results: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save results: {str(e)}")
+
+    def _save_additional_visualizations(self, viz_dir: Path):
+        """Generate and save additional visualizations"""
+        try:
+            # Feature importance plot
+            if hasattr(self, 'importance_results'):
+                plt.figure(figsize=(10, 6))
+                sns.barplot(
+                    data=self.importance_results['importances'],
+                    x='Importance',
+                    y='Feature'
+                )
+                plt.title('Feature Importance')
+                plt.tight_layout()
+                plt.savefig(viz_dir / 'feature_importance.png', dpi=300, bbox_inches='tight')
+                plt.close()
+                
+            # Cluster distribution plot
+            plt.figure(figsize=(10, 6))
+            sns.countplot(x=self.cluster_labels)
+            plt.title('Cluster Size Distribution')
+            plt.xlabel('Cluster')
+            plt.ylabel('Number of Samples')
+            plt.tight_layout()
+            plt.savefig(viz_dir / 'cluster_distribution.png', dpi=300, bbox_inches='tight')
+            plt.close()
+            
+            # If dimensionality reduction was performed
+            if hasattr(self, 'reduction_results'):
+                reduced_data = self.reduction_results['reduced_data']
+                if reduced_data.shape[1] == 2:
+                    plt.figure(figsize=(10, 8))
+                    plt.scatter(
+                        reduced_data[:, 0],
+                        reduced_data[:, 1],
+                        c=self.cluster_labels,
+                        cmap='viridis'
+                    )
+                    plt.title(f'{self.reduction_results["method"]} Projection')
+                    plt.xlabel('Component 1')
+                    plt.ylabel('Component 2')
+                    plt.colorbar(label='Cluster')
+                    plt.tight_layout()
+                    plt.savefig(viz_dir / 'cluster_projection.png', dpi=300, bbox_inches='tight')
+                    plt.close()
+                    
+            self.logger.info(f"Additional visualizations saved to {viz_dir}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save additional visualizations: {str(e)}")
+            # Don't raise - this is a non-critical error
+
+    def generate_plot(self):
+        """Generate visualization based on selected plot type"""
+        try:
+            if self.normalized_data is None:
+                raise ValueError("No processed data available")
+                
+            if self.cluster_labels is None:
+                raise ValueError("No clustering results available")
+                
+            plot_type = self.plot_type.get()
+            
+            # Clear previous plot
+            self.fig.clear()
+            
+            if plot_type == "distribution":
+                self._generate_distribution_plot()
+            elif plot_type == "profile":
+                self._generate_profile_plot()
+            elif plot_type == "reduction":
+                self._generate_reduction_plot()
+            elif plot_type == "importance":
+                self._generate_importance_plot()
+                
+            # Update canvas
+            self.canvas.draw()
+            
+            # Store current plot for saving
+            self.current_plot = self.fig
+            
+            self.logger.info(f"Generated {plot_type} plot successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate plot: {str(e)}")
+            messagebox.showerror("Error", f"Failed to generate plot: {str(e)}")
+
+    def _generate_distribution_plot(self):
+        """Generate distribution plot for selected feature"""
+        try:
+            feature = self.dist_feature.get()
+            plot_type = self.dist_type.get()
+            
+            if not feature:
+                raise ValueError("No feature selected")
+                
+            ax = self.fig.add_subplot(111)
+            
+            if plot_type == "histogram":
+                for label in np.unique(self.cluster_labels):
+                    mask = self.cluster_labels == label
+                    sns.histplot(
+                        data=self.normalized_data[mask],
+                        x=feature,
+                        label=f'Cluster {label}',
+                        ax=ax,
+                        alpha=0.5
+                    )
+            elif plot_type == "kde":
+                for label in np.unique(self.cluster_labels):
+                    mask = self.cluster_labels == label
+                    sns.kdeplot(
+                        data=self.normalized_data[mask][feature],
+                        label=f'Cluster {label}',
+                        ax=ax
+                    )
+            else:  # box plot
+                sns.boxplot(
+                    data=self.normalized_data,
+                    y=feature,
+                    x=self.cluster_labels,
+                    ax=ax
+                )
+                
+            ax.set_title(f'{feature} Distribution by Cluster')
+            ax.legend()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate distribution plot: {str(e)}")
+            raise
+
+    def _generate_profile_plot(self):
+        """Generate cluster profile visualization"""
+        try:
+            plot_type = self.profile_type.get()
+            selected_indices = self.feature_listbox.curselection()
+            
+            if not selected_indices:
+                raise ValueError("No features selected")
+                
+            features = [self.feature_listbox.get(i) for i in selected_indices]
+            data = self.normalized_data[features]
+            
+            if plot_type == "heatmap":
+                # Calculate cluster means
+                cluster_means = pd.DataFrame([
+                    data[self.cluster_labels == label].mean()
+                    for label in np.unique(self.cluster_labels)
+                ], index=[f'Cluster {label}' for label in np.unique(self.cluster_labels)])
+                
+                ax = self.fig.add_subplot(111)
+                sns.heatmap(
+                    cluster_means,
+                    cmap='coolwarm',
+                    center=0,
+                    annot=True,
+                    fmt='.2f',
+                    ax=ax
+                )
+                ax.set_title('Cluster Profiles Heatmap')
+                
+            elif plot_type == "parallel":
+                # Create parallel coordinates plot
+                ax = self.fig.add_subplot(111)
+                pd.plotting.parallel_coordinates(
+                    pd.concat([data, pd.Series(self.cluster_labels, name='Cluster')], axis=1),
+                    'Cluster',
+                    ax=ax
+                )
+                ax.set_title('Parallel Coordinates Plot')
+                
+            else:  # radar plot
+                # Prepare data for radar plot
+                angles = np.linspace(0, 2*np.pi, len(features), endpoint=False)
+                
+                # Calculate means for each cluster
+                cluster_means = np.array([
+                    data[self.cluster_labels == label].mean()
+                    for label in np.unique(self.cluster_labels)
+                ])
+                
+                # Create radar plot
+                ax = self.fig.add_subplot(111, projection='polar')
+                for i, means in enumerate(cluster_means):
+                    values = np.concatenate((means, [means[0]]))  # Close the polygon
+                    angles_plot = np.concatenate((angles, [angles[0]]))
+                    ax.plot(angles_plot, values, label=f'Cluster {i}')
+                    
+                ax.set_xticks(angles)
+                ax.set_xticklabels(features)
+                ax.set_title('Radar Chart of Cluster Profiles')
+                ax.legend()
+                
+        except Exception as e:
+            self.logger.error(f"Failed to generate profile plot: {str(e)}")
+            raise
+
+    def _generate_reduction_plot(self):
+        """Generate dimensionality reduction visualization"""
+        try:
+            method = self.reduction_method.get()
+            n_components = self.n_components.get()
+            
+            if n_components not in [2, 3]:
+                raise ValueError("Number of components must be 2 or 3 for visualization")
+                
+            # Perform dimensionality reduction
+            if method == "pca":
+                reducer = PCA(n_components=n_components, random_state=self.random_state)
+            elif method == "tsne":
+                reducer = TSNE(n_components=n_components, random_state=self.random_state)
+            else:  # umap
+                reducer = umap.UMAP(n_components=n_components, random_state=self.random_state)
+                
+            reduced_data = reducer.fit_transform(self.normalized_data)
+            
+            # Store reduction results
+            self.reduction_results = {
+                'method': method,
+                'reduced_data': reduced_data,
+                'model': reducer
+            }
+            
+            # Create plot
+            if n_components == 2:
+                ax = self.fig.add_subplot(111)
+                scatter = ax.scatter(
+                    reduced_data[:, 0],
+                    reduced_data[:, 1],
+                    c=self.cluster_labels,
+                    cmap='viridis'
+                )
+                ax.set_xlabel(f'{method.upper()} Component 1')
+                ax.set_ylabel(f'{method.upper()} Component 2')
+                
+            else:  # 3D plot
+                ax = self.fig.add_subplot(111, projection='3d')
+                scatter = ax.scatter(
+                    reduced_data[:, 0],
+                    reduced_data[:, 1],
+                    reduced_data[:, 2],
+                    c=self.cluster_labels,
+                    cmap='viridis'
+                )
+                ax.set_xlabel(f'{method.upper()} Component 1')
+                ax.set_ylabel(f'{method.upper()} Component 2')
+                ax.set_zlabel(f'{method.upper()} Component 3')
+                
+            self.fig.colorbar(scatter, label='Cluster')
+            ax.set_title(f'{method.upper()} Projection of Clusters')
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate reduction plot: {str(e)}")
+            raise
+
+    def _generate_importance_plot(self):
+        """Generate feature importance visualization"""
+        try:
+            method = self.importance_method.get()
+            n_features = self.n_top_features.get()
+            
+            # Calculate feature importance
+            if method == "random_forest":
+                clf = RandomForestClassifier(n_estimators=100, random_state=self.random_state)
+                clf.fit(self.normalized_data, self.cluster_labels)
+                importances = clf.feature_importances_
+                
+            elif method == "mutual_info":
+                from sklearn.feature_selection import mutual_info_classif
+                importances = mutual_info_classif(
+                    self.normalized_data,
+                    self.cluster_labels,
+                    random_state=self.random_state
+                )
+                
+            else:  # chi2
+                from sklearn.feature_selection import chi2
+                importances, _ = chi2(
+                    self.normalized_data,
+                    self.cluster_labels
+                )
+                
+            # Create importance DataFrame
+            importance_df = pd.DataFrame({
+                'Feature': self.normalized_data.columns,
+                'Importance': importances
+            })
+            importance_df = importance_df.nlargest(n_features, 'Importance')
+            
+            # Store results
+            self.importance_results = {
+                'method': method,
+                'importances': importance_df
+            }
+            
+            # Create plot
+            ax = self.fig.add_subplot(111)
+            sns.barplot(
+                data=importance_df,
+                x='Importance',
+                y='Feature',
+                ax=ax
+            )
+            ax.set_title(f'Top {n_features} Important Features ({method})')
+            
+        except Exception as e:
+            self.logger.error(f"Failed to generate importance plot: {str(e)}")
+            raise
 
 def main():
     """Main entry point for the clustering GUI application"""

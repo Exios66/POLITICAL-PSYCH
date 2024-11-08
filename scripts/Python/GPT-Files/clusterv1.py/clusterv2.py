@@ -1,7 +1,863 @@
 import json
 import logging
+from numbers import Number
 import traceback
 from pathlib import Path
+from typing import Dict, List, Optional, Tuple, Union
+import joblib
+from matplotlib.figure import Figure
+import numpy as np
+import pandas as pd
+from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.manifold import TSNE
+from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
+from sklearn.decomposition import PCA, FactorAnalysis
+from sklearn.metrics import silhouette_samples, silhouette_score, calinski_harabasz_score
+from scipy.stats import f_oneway, chi2_contingency, ttest_ind
+import matplotlib.pyplot as plt
+import seaborn as sns
+from datetime import datetime
+import tkinter as tk
+from tkinter import ttk, messagebox, filedialog
+from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
+import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
+from sklearn.neighbors import NearestNeighbors
+import tqdm
+from kneed import KneeLocator
+from scipy import stats
+import umap.umap_ as umap
+from statsmodels.stats.multitest import multipletests
+import sys
+from scipy.cluster.hierarchy import linkage, dendrogram
+
+# Configure logging
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+)
+logger = logging.getLogger(__name__)
+
+# Survey metrics categories
+SURVEY_METRICS = {
+    'news_consumption': [
+        'Trad_News_print', 'Trad_News_online', 'Trad_News_TV', 'Trad_News_radio',
+        'SM_News_1', 'SM_News_2', 'SM_News_3', 'SM_News_4', 'SM_News_5', 'SM_News_6',
+        'News_frequency', 'SM_Sharing'
+    ],
+    'temporal': ['survey_date']
+}
+
+class ClusteringError(Exception):
+    """Custom exception for clustering-related errors"""
+    pass
+
+class VisualizationError(Exception):
+    """Custom exception for visualization-related errors"""
+    pass
+
+class ClusterAnalysisGUI:
+    def __init__(self, master):
+        """Initialize GUI components with enhanced structure and error handling"""
+        # Store root window reference
+        self.master = master
+        self.master.title("Political Psychology Cluster Analysis")
+        self.master.geometry("1200x800")
+        
+        # Configure basic logging first
+        self._setup_logging()
+        
+        try:
+            # Initialize core variables
+            self._initialize_variables()
+            
+            # Configure window minimum size
+            self.master.minsize(800, 600)
+            
+            # Configure grid weights for proper scaling
+            self.master.grid_rowconfigure(0, weight=1)
+            self.master.grid_columnconfigure(0, weight=1)
+            
+            # Setup directories
+            self._setup_directories()
+            
+            # Initialize data variables
+            self.cleaned_data = None
+            self.normalized_data = None
+            self.random_state = 42
+            
+            # Create main container with tabs
+            self.notebook = ttk.Notebook(self.master)
+            self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            # Initialize tabs
+            self._initialize_tabs()
+            
+            # Create status and progress bars
+            self._create_status_bars()
+            
+        except Exception as e:
+            messagebox.showerror("Initialization Error", f"Failed to initialize application: {str(e)}")
+            raise
+
+    def _setup_logging(self):
+        """Set up logging configuration"""
+        # Create logs directory
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        
+        # Create log file with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file = log_dir / f"cluster_analysis_{timestamp}.log"
+        
+        # Configure logging
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+        
+        self.logger.info("Logging initialized")
+
+    def _initialize_variables(self):
+        """Initialize all GUI variables"""
+        try:
+            # File handling variables
+            self.file_path = tk.StringVar()
+            
+            # Data processing variables
+            self.handle_missing = tk.BooleanVar(value=True)
+            self.remove_outliers = tk.BooleanVar(value=True)
+            self.normalize = tk.BooleanVar(value=True)
+            
+            # Method variables
+            self.missing_method = tk.StringVar(value="median")
+            self.outlier_method = tk.StringVar(value="iqr")
+            self.norm_method = tk.StringVar(value="standard")
+            
+            # Clustering variables
+            self.cluster_method = tk.StringVar(value="kmeans")
+            self.n_clusters = tk.IntVar(value=3)
+            self.eps = tk.DoubleVar(value=0.5)
+            self.min_samples = tk.IntVar(value=5)
+            self.max_iter = tk.IntVar(value=300)
+            
+            # Analysis variables
+            self.analysis_type = tk.StringVar(value="statistical")
+            self.stat_test = tk.StringVar(value="anova")
+            
+            # Plot variables
+            self.plot_type = tk.StringVar(value="distribution")
+            self.dist_feature = tk.StringVar()
+            self.dist_type = tk.StringVar(value="histogram")
+            self.profile_type = tk.StringVar(value="heatmap")
+            self.reduction_method = tk.StringVar(value="pca")
+            self.n_components = tk.IntVar(value=2)
+            self.importance_method = tk.StringVar(value="random_forest")
+            self.n_top_features = tk.IntVar(value=10)
+            
+            # Status variables
+            self.status_var = tk.StringVar(value="Ready")
+            self.progress_var = tk.DoubleVar(value=0)
+            
+            self.logger.info("Variables initialized successfully")
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Failed to initialize variables: {str(e)}")
+            raise
+
+    def _setup_directories(self):
+        """Create necessary directories"""
+        try:
+            # Define directory paths
+            self.output_dir = Path("output")
+            self.models_dir = self.output_dir / "models"
+            self.plots_dir = self.output_dir / "plots"
+            self.results_dir = self.output_dir / "results"
+            self.temp_dir = self.output_dir / "temp"
+            
+            # Create directories
+            for directory in [self.output_dir, self.models_dir, self.plots_dir, 
+                            self.results_dir, self.temp_dir]:
+                directory.mkdir(parents=True, exist_ok=True)
+            
+            self.logger.info("Directories created successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create directories: {str(e)}")
+            raise
+
+    def _initialize_tabs(self):
+        """Initialize and configure all tab components"""
+        try:
+            # Create tab frames
+            self.data_tab = ttk.Frame(self.notebook)
+            self.cluster_tab = ttk.Frame(self.notebook)
+            self.viz_tab = ttk.Frame(self.notebook)
+            self.analysis_tab = ttk.Frame(self.notebook)
+            
+            # Add tabs to notebook
+            self.notebook.add(self.data_tab, text="Data Processing")
+            self.notebook.add(self.cluster_tab, text="Clustering")
+            self.notebook.add(self.viz_tab, text="Visualization")
+            self.notebook.add(self.analysis_tab, text="Analysis")
+            
+            # Create frames for clustering methods before creating cluster tab
+            self.create_kmeans_frame()
+            self.create_dbscan_frame()
+            self.create_hierarchical_frame()
+            
+            # Initialize tab contents
+            self.create_data_tab()
+            self.create_cluster_tab()
+            self.create_viz_tab()
+            self.create_analysis_tab()
+            
+            self.logger.info("Tabs initialized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize tabs: {str(e)}")
+            raise
+
+    def _create_status_bars(self):
+        """Create and configure status and progress bars"""
+        try:
+            # Status bar
+            self.status_var = tk.StringVar()
+            self.status_bar = ttk.Label(
+                self.master,
+                textvariable=self.status_var,
+                relief=tk.SUNKEN,
+                anchor=tk.W
+            )
+            self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Progress bar
+            self.progress_var = tk.DoubleVar()
+            self.progress_bar = ttk.Progressbar(
+                self.master,
+                variable=self.progress_var,
+                maximum=100,
+                mode='determinate'
+            )
+            self.progress_bar.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Initial status
+            self.status_var.set("Ready")
+            self.progress_var.set(0)
+            
+            self.logger.info("Status bars created successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create status bars: {str(e)}")
+            raise
+
+    def create_data_tab(self):
+        """Create and configure data processing tab"""
+        try:
+            # File selection frame
+            file_frame = ttk.LabelFrame(self.data_tab, text="Data File")
+            file_frame.pack(fill=tk.X, padx=5, pady=5)
+            
+            ttk.Entry(
+                file_frame,
+                textvariable=self.file_path,
+                width=60
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+            
+            ttk.Button(
+                file_frame,
+                text="Browse",
+                command=self.browse_file
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Data processing options
+            self.create_processing_options()
+            
+            # Preview frame
+            self.create_preview_frame()
+            
+            self.logger.info("Data tab created successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create data tab: {str(e)}")
+            raise
+
+    def create_processing_options(self):
+        """Create data processing options section"""
+        try:
+            options_frame = ttk.LabelFrame(self.data_tab, text="Processing Options")
+            options_frame.pack(fill=tk.X, padx=5, pady=5)
+            
+            # Missing values
+            missing_frame = ttk.Frame(options_frame)
+            missing_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Checkbutton(
+                missing_frame,
+                text="Handle Missing Values",
+                variable=self.handle_missing,
+                command=self.update_missing_options
+            ).pack(side=tk.LEFT)
+            
+            self.missing_method_menu = ttk.OptionMenu(
+                missing_frame,
+                self.missing_method,
+                "median",
+                "median", "mean", "mode", "drop"
+            )
+            self.missing_method_menu.pack(side=tk.LEFT, padx=5)
+            
+            # Outliers
+            outlier_frame = ttk.Frame(options_frame)
+            outlier_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Checkbutton(
+                outlier_frame,
+                text="Remove Outliers",
+                variable=self.remove_outliers,
+                command=self.update_outlier_options
+            ).pack(side=tk.LEFT)
+            
+            self.outlier_method_menu = ttk.OptionMenu(
+                outlier_frame,
+                self.outlier_method,
+                "iqr",
+                "iqr", "zscore", "isolation_forest"
+            )
+            self.outlier_method_menu.pack(side=tk.LEFT, padx=5)
+            
+            # Normalization
+            norm_frame = ttk.Frame(options_frame)
+            norm_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Checkbutton(
+                norm_frame,
+                text="Normalize Features",
+                variable=self.normalize,
+                command=self.update_norm_options
+            ).pack(side=tk.LEFT)
+            
+            self.norm_method_menu = ttk.OptionMenu(
+                norm_frame,
+                self.norm_method,
+                "standard",
+                "standard", "minmax", "robust"
+            )
+            self.norm_method_menu.pack(side=tk.LEFT, padx=5)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create processing options: {str(e)}")
+            raise
+
+    def create_preview_frame(self):
+        """Create data preview frame"""
+        try:
+            preview_frame = ttk.LabelFrame(self.data_tab, text="Data Preview")
+            preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            # Add scrollbars
+            preview_scroll_y = ttk.Scrollbar(preview_frame)
+            preview_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            preview_scroll_x = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL)
+            preview_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Create text widget
+            self.preview_text = tk.Text(
+                preview_frame,
+                wrap=tk.NONE,
+                xscrollcommand=preview_scroll_x.set,
+                yscrollcommand=preview_scroll_y.set
+            )
+            self.preview_text.pack(fill=tk.BOTH, expand=True)
+            
+            # Configure scrollbars
+            preview_scroll_y.config(command=self.preview_text.yview)
+            preview_scroll_x.config(command=self.preview_text.xview)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create preview frame: {str(e)}")
+            raise
+
+    def find_optimal_clusters(
+        self,
+        method: str = 'elbow',
+        max_k: int = 10,
+        min_k: int = 2,
+        n_init: int = 10
+    def find_optimal_clusters(
+        self,
+        method: str = 'elbow',
+        max_k: int = 10,
+        min_k: int = 2,
+        n_init: int = 10
+    ) -> int:
+        """
+        """
+        Find optimal number of clusters using specified method.
+        
+        Args:
+            method: Method to use ('elbow', 'silhouette', or 'gap')
+            max_k: Maximum number of clusters to try
+            min_k: Minimum number of clusters to try
+            n_init: Number of initializations for k-means
+            
+        Returns:
+            Optimal number of clusters
+            
+        Raises:
+            ValueError: If normalized_data is None or empty
+            ValueError: If invalid method specified
+            RuntimeError: If optimization fails
+        """
+        """
+        pass
+
+    def create_kmeans_frame(self):
+        """Create and configure k-means clustering frame"""
+        pass
+
+    def create_dbscan_frame(self):
+        """Create and configure DBSCAN clustering frame"""
+        pass
+
+    def create_hierarchical_frame(self):
+        """Create and configure hierarchical clustering frame"""
+        pass
+
+    def create_cluster_tab(self):
+        """Create and configure clustering tab"""
+        pass
+
+    def create_viz_tab(self):
+        """Create and configure visualization tab"""
+        pass
+
+    def create_analysis_tab(self):
+        """Create and configure analysis tab"""
+        pass
+
+    def browse_file(self):
+        """Browse and load data file"""
+        pass
+
+    def update_missing_options(self):
+        """Update missing value handling options"""
+        pass
+
+    def update_outlier_options(self):
+        """Update outlier removal options"""
+        pass
+
+    def update_norm_options(self):
+        """Update normalization options"""
+        pass
+
+    def load_data(self):
+        """Load data from file"""
+        pass
+
+    def handle_missing_values(self):
+        """Handle missing values based on selected method"""
+        pass
+
+    def remove_outliers(self):
+        """Remove outliers based on selected method"""
+        pass
+
+    def normalize_features(self):
+        """Normalize features based on selected method"""
+        pass
+
+    def cluster_data(self):
+        """Perform clustering based on selected method"""
+        pass
+
+    def analyze_clusters(self):
+        """Analyze clusters based on selected method"""
+        pass
+
+    def visualize_clusters(self):
+        """Visualize clusters based on selected method"""
+        pass
+
+    def save_results(self):
+        """Save results to file"""
+        pass
+
+    def run_analysis(self):
+        """Run full analysis pipeline"""
+        pass
+
+if __name__ == "__main__":
+    root = tk.Tk()
+    app = ClusterAnalysisGUI(root)
+    root.mainloop()
+
+class ClusterAnalysisGUI:
+    def __init__(self, master):
+        """Initialize GUI components with enhanced structure and error handling"""
+        # Store root window reference
+        self.master = master
+        self.master.title("Political Psychology Cluster Analysis")
+        self.master.geometry("1200x800")
+        
+        # Configure basic logging first
+        self._setup_logging()
+        
+        try:
+            # Initialize core variables
+            self._initialize_variables()
+            
+            # Configure window minimum size
+            self.master.minsize(800, 600)
+            
+            # Configure grid weights for proper scaling
+            self.master.grid_rowconfigure(0, weight=1)
+            self.master.grid_columnconfigure(0, weight=1)
+            
+            # Setup directories
+            self._setup_directories()
+            
+            # Initialize data variables
+            self.cleaned_data = None
+            self.normalized_data = None
+            self.random_state = 42
+            
+            # Create main container with tabs
+            self.notebook = ttk.Notebook(self.master)
+            self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            # Initialize tabs
+            self._initialize_tabs()
+            
+            # Create status and progress bars
+            self._create_status_bars()
+            
+        except Exception as e:
+            messagebox.showerror("Initialization Error", f"Failed to initialize application: {str(e)}")
+            raise
+
+    def _setup_logging(self):
+        """Set up logging configuration"""
+        # Create logs directory
+        log_dir = Path("logs")
+        log_dir.mkdir(exist_ok=True)
+        
+        # Create log file with timestamp
+        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+        log_file = log_dir / f"cluster_analysis_{timestamp}.log"
+        
+        # Configure logging
+        formatter = logging.Formatter(
+            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+        )
+        
+        file_handler = logging.FileHandler(log_file)
+        file_handler.setFormatter(formatter)
+        
+        console_handler = logging.StreamHandler()
+        console_handler.setFormatter(formatter)
+        
+        self.logger = logging.getLogger(__name__)
+        self.logger.setLevel(logging.INFO)
+        self.logger.addHandler(file_handler)
+        self.logger.addHandler(console_handler)
+        
+        self.logger.info("Logging initialized")
+
+    def _initialize_variables(self):
+        """Initialize all GUI variables"""
+        try:
+            # File handling variables
+            self.file_path = tk.StringVar()
+            
+            # Data processing variables
+            self.handle_missing = tk.BooleanVar(value=True)
+            self.remove_outliers = tk.BooleanVar(value=True)
+            self.normalize = tk.BooleanVar(value=True)
+            
+            # Method variables
+            self.missing_method = tk.StringVar(value="median")
+            self.outlier_method = tk.StringVar(value="iqr")
+            self.norm_method = tk.StringVar(value="standard")
+            
+            # Clustering variables
+            self.cluster_method = tk.StringVar(value="kmeans")
+            self.n_clusters = tk.IntVar(value=3)
+            self.eps = tk.DoubleVar(value=0.5)
+            self.min_samples = tk.IntVar(value=5)
+            self.max_iter = tk.IntVar(value=300)
+            
+            # Analysis variables
+            self.analysis_type = tk.StringVar(value="statistical")
+            self.stat_test = tk.StringVar(value="anova")
+            
+            # Plot variables
+            self.plot_type = tk.StringVar(value="distribution")
+            self.dist_feature = tk.StringVar()
+            self.dist_type = tk.StringVar(value="histogram")
+            self.profile_type = tk.StringVar(value="heatmap")
+            self.reduction_method = tk.StringVar(value="pca")
+            self.n_components = tk.IntVar(value=2)
+            self.importance_method = tk.StringVar(value="random_forest")
+            self.n_top_features = tk.IntVar(value=10)
+            
+            # Status variables
+            self.status_var = tk.StringVar(value="Ready")
+            self.progress_var = tk.DoubleVar(value=0)
+            
+            self.logger.info("Variables initialized successfully")
+            
+        except Exception as e:
+            if hasattr(self, 'logger'):
+                self.logger.error(f"Failed to initialize variables: {str(e)}")
+            raise
+
+    def _setup_directories(self):
+        """Create necessary directories"""
+        try:
+            # Define directory paths
+            self.output_dir = Path("output")
+            self.models_dir = self.output_dir / "models"
+            self.plots_dir = self.output_dir / "plots"
+            self.results_dir = self.output_dir / "results"
+            self.temp_dir = self.output_dir / "temp"
+            
+            # Create directories
+            for directory in [self.output_dir, self.models_dir, self.plots_dir, 
+                            self.results_dir, self.temp_dir]:
+                directory.mkdir(parents=True, exist_ok=True)
+            
+            self.logger.info("Directories created successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create directories: {str(e)}")
+            raise
+
+    def _initialize_tabs(self):
+        """Initialize and configure all tab components"""
+        try:
+            # Create tab frames
+            self.data_tab = ttk.Frame(self.notebook)
+            self.cluster_tab = ttk.Frame(self.notebook)
+            self.viz_tab = ttk.Frame(self.notebook)
+            self.analysis_tab = ttk.Frame(self.notebook)
+            
+            # Add tabs to notebook
+            self.notebook.add(self.data_tab, text="Data Processing")
+            self.notebook.add(self.cluster_tab, text="Clustering")
+            self.notebook.add(self.viz_tab, text="Visualization")
+            self.notebook.add(self.analysis_tab, text="Analysis")
+            
+            # Create frames for clustering methods before creating cluster tab
+            self.create_kmeans_frame()
+            self.create_dbscan_frame()
+            self.create_hierarchical_frame()
+            
+            # Initialize tab contents
+            self.create_data_tab()
+            self.create_cluster_tab()
+            self.create_viz_tab()
+            self.create_analysis_tab()
+            
+            self.logger.info("Tabs initialized successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to initialize tabs: {str(e)}")
+            raise
+
+    def _create_status_bars(self):
+        """Create and configure status and progress bars"""
+        try:
+            # Status bar
+            self.status_var = tk.StringVar()
+            self.status_bar = ttk.Label(
+                self.master,
+                textvariable=self.status_var,
+                relief=tk.SUNKEN,
+                anchor=tk.W
+            )
+            self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Progress bar
+            self.progress_var = tk.DoubleVar()
+            self.progress_bar = ttk.Progressbar(
+                self.master,
+                variable=self.progress_var,
+                maximum=100,
+                mode='determinate'
+            )
+            self.progress_bar.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Initial status
+            self.status_var.set("Ready")
+            self.progress_var.set(0)
+            
+            self.logger.info("Status bars created successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create status bars: {str(e)}")
+            raise
+
+    def create_data_tab(self):
+        """Create and configure data processing tab"""
+        try:
+            # File selection frame
+            file_frame = ttk.LabelFrame(self.data_tab, text="Data File")
+            file_frame.pack(fill=tk.X, padx=5, pady=5)
+            
+            ttk.Entry(
+                file_frame,
+                textvariable=self.file_path,
+                width=60
+            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
+            
+            ttk.Button(
+                file_frame,
+                text="Browse",
+                command=self.browse_file
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Data processing options
+            self.create_processing_options()
+            
+            # Preview frame
+            self.create_preview_frame()
+            
+            self.logger.info("Data tab created successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create data tab: {str(e)}")
+            raise
+
+    def create_processing_options(self):
+        """Create data processing options section"""
+        try:
+            options_frame = ttk.LabelFrame(self.data_tab, text="Processing Options")
+            options_frame.pack(fill=tk.X, padx=5, pady=5)
+            
+            # Missing values
+            missing_frame = ttk.Frame(options_frame)
+            missing_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Checkbutton(
+                missing_frame,
+                text="Handle Missing Values",
+                variable=self.handle_missing,
+                command=self.update_missing_options
+            ).pack(side=tk.LEFT)
+            
+            self.missing_method_menu = ttk.OptionMenu(
+                missing_frame,
+                self.missing_method,
+                "median",
+                "median", "mean", "mode", "drop"
+            )
+            self.missing_method_menu.pack(side=tk.LEFT, padx=5)
+            
+            # Outliers
+            outlier_frame = ttk.Frame(options_frame)
+            outlier_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Checkbutton(
+                outlier_frame,
+                text="Remove Outliers",
+                variable=self.remove_outliers,
+                command=self.update_outlier_options
+            ).pack(side=tk.LEFT)
+            
+            self.outlier_method_menu = ttk.OptionMenu(
+                outlier_frame,
+                self.outlier_method,
+                "iqr",
+                "iqr", "zscore", "isolation_forest"
+            )
+            self.outlier_method_menu.pack(side=tk.LEFT, padx=5)
+            
+            # Normalization
+            norm_frame = ttk.Frame(options_frame)
+            norm_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Checkbutton(
+                norm_frame,
+                text="Normalize Features",
+                variable=self.normalize,
+                command=self.update_norm_options
+            ).pack(side=tk.LEFT)
+            
+            self.norm_method_menu = ttk.OptionMenu(
+                norm_frame,
+                self.norm_method,
+                "standard",
+                "standard", "minmax", "robust"
+            )
+            self.norm_method_menu.pack(side=tk.LEFT, padx=5)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create processing options: {str(e)}")
+            raise
+
+    def create_preview_frame(self):
+        """Create data preview frame"""
+        try:
+            preview_frame = ttk.LabelFrame(self.data_tab, text="Data Preview")
+            preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            # Add scrollbars
+            preview_scroll_y = ttk.Scrollbar(preview_frame)
+            preview_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            preview_scroll_x = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL)
+            preview_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Create text widget
+            self.preview_text = tk.Text(
+                preview_frame,
+                wrap=tk.NONE,
+                xscrollcommand=preview_scroll_x.set,
+                yscrollcommand=preview_scroll_y.set
+            )
+            self.preview_text.pack(fill=tk.BOTH, expand=True)
+            
+            # Configure scrollbars
+            preview_scroll_y.config(command=self.preview_text.yview)
+            preview_scroll_x.config(command=self.preview_text.xview)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create preview frame: {str(e)}")
+            raise
+
+    def find_optimal_clusters(self,
+                            method: str = 'elbow',
+                            max_k: int = 10,
+                            min_k: int = 2,
+                            n_init: int = 10):
+        ) -> int:
+        """Find optimal number of clusters using specified method.
+        
+        Args:
+            method: Method to use ('elbow' or 'silhouette')
+            max_k: Maximum number of clusters to try
+            min_k: Minimum number of clusters to try
+            n_init: Number of initializations for k-means
+            
+        Returns:
+            Optimal number of clusters
+        """
 from typing import Dict, List, Optional, Tuple, Union
 import joblib
 from matplotlib.figure import Figure
@@ -497,750 +1353,7 @@ if __name__ == "__main__":
     root = tk.Tk()
     app = ClusterAnalysisGUI(root)
     root.mainloop()
-</original_file>
-class ClusterAnalysisGUI:
-    def __init__(self, master):
-        """Initialize GUI components with enhanced structure and error handling"""
-        # Store root window reference
-        self.master = master
-        self.master.title("Political Psychology Cluster Analysis")
-        self.master.geometry("1200x800")
-        
-        # Configure basic logging first
-        self._setup_logging()
-        
-        try:
-            # Initialize core variables
-            self._initialize_variables()
-            
-            # Configure window minimum size
-            self.master.minsize(800, 600)
-            
-            # Configure grid weights for proper scaling
-            self.master.grid_rowconfigure(0, weight=1)
-            self.master.grid_columnconfigure(0, weight=1)
-            
-            # Setup directories
-            self._setup_directories()
-            
-            # Initialize data variables
-            self.cleaned_data = None
-            self.normalized_data = None
-            self.random_state = 42
-            
-            # Create main container with tabs
-            self.notebook = ttk.Notebook(self.master)
-            self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-            # Initialize tabs
-            self._initialize_tabs()
-            
-            # Create status and progress bars
-            self._create_status_bars()
-            
-        except Exception as e:
-            messagebox.showerror("Initialization Error", f"Failed to initialize application: {str(e)}")
-            raise
-
-    def _setup_logging(self):
-        """Set up logging configuration"""
-        # Create logs directory
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
-        # Create log file with timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_file = log_dir / f"cluster_analysis_{timestamp}.log"
-        
-        # Configure logging
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(formatter)
-        
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
-        self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
-        
-        self.logger.info("Logging initialized")
-
-    def _initialize_variables(self):
-        """Initialize all GUI variables"""
-        try:
-            # File handling variables
-            self.file_path = tk.StringVar()
-            
-            # Data processing variables
-            self.handle_missing = tk.BooleanVar(value=True)
-            self.remove_outliers = tk.BooleanVar(value=True)
-            self.normalize = tk.BooleanVar(value=True)
-            
-            # Method variables
-            self.missing_method = tk.StringVar(value="median")
-            self.outlier_method = tk.StringVar(value="iqr")
-            self.norm_method = tk.StringVar(value="standard")
-            
-            # Clustering variables
-            self.cluster_method = tk.StringVar(value="kmeans")
-            self.n_clusters = tk.IntVar(value=3)
-            self.eps = tk.DoubleVar(value=0.5)
-            self.min_samples = tk.IntVar(value=5)
-            self.max_iter = tk.IntVar(value=300)
-            
-            # Analysis variables
-            self.analysis_type = tk.StringVar(value="statistical")
-            self.stat_test = tk.StringVar(value="anova")
-            
-            # Plot variables
-            self.plot_type = tk.StringVar(value="distribution")
-            self.dist_feature = tk.StringVar()
-            self.dist_type = tk.StringVar(value="histogram")
-            self.profile_type = tk.StringVar(value="heatmap")
-            self.reduction_method = tk.StringVar(value="pca")
-            self.n_components = tk.IntVar(value=2)
-            self.importance_method = tk.StringVar(value="random_forest")
-            self.n_top_features = tk.IntVar(value=10)
-            
-            # Status variables
-            self.status_var = tk.StringVar(value="Ready")
-            self.progress_var = tk.DoubleVar(value=0)
-            
-            self.logger.info("Variables initialized successfully")
-            
-        except Exception as e:
-            if hasattr(self, 'logger'):
-                self.logger.error(f"Failed to initialize variables: {str(e)}")
-            raise
-
-    def _setup_directories(self):
-        """Create necessary directories"""
-        try:
-            # Define directory paths
-            self.output_dir = Path("output")
-            self.models_dir = self.output_dir / "models"
-            self.plots_dir = self.output_dir / "plots"
-            self.results_dir = self.output_dir / "results"
-            self.temp_dir = self.output_dir / "temp"
-            
-            # Create directories
-            for directory in [self.output_dir, self.models_dir, self.plots_dir, 
-                            self.results_dir, self.temp_dir]:
-                directory.mkdir(parents=True, exist_ok=True)
-            
-            self.logger.info("Directories created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create directories: {str(e)}")
-            raise
-
-    def _initialize_tabs(self):
-        """Initialize and configure all tab components"""
-        try:
-            # Create tab frames
-            self.data_tab = ttk.Frame(self.notebook)
-            self.cluster_tab = ttk.Frame(self.notebook)
-            self.viz_tab = ttk.Frame(self.notebook)
-            self.analysis_tab = ttk.Frame(self.notebook)
-            
-            # Add tabs to notebook
-            self.notebook.add(self.data_tab, text="Data Processing")
-            self.notebook.add(self.cluster_tab, text="Clustering")
-            self.notebook.add(self.viz_tab, text="Visualization")
-            self.notebook.add(self.analysis_tab, text="Analysis")
-            
-            # Create frames for clustering methods before creating cluster tab
-            self.create_kmeans_frame()
-            self.create_dbscan_frame()
-            self.create_hierarchical_frame()
-            
-            # Initialize tab contents
-            self.create_data_tab()
-            self.create_cluster_tab()
-            self.create_viz_tab()
-            self.create_analysis_tab()
-            
-            self.logger.info("Tabs initialized successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize tabs: {str(e)}")
-            raise
-
-    def _create_status_bars(self):
-        """Create and configure status and progress bars"""
-        try:
-            # Status bar
-            self.status_var = tk.StringVar()
-            self.status_bar = ttk.Label(
-                self.master,
-                textvariable=self.status_var,
-                relief=tk.SUNKEN,
-                anchor=tk.W
-            )
-            self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Progress bar
-            self.progress_var = tk.DoubleVar()
-            self.progress_bar = ttk.Progressbar(
-                self.master,
-                variable=self.progress_var,
-                maximum=100,
-                mode='determinate'
-            )
-            self.progress_bar.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Initial status
-            self.status_var.set("Ready")
-            self.progress_var.set(0)
-            
-            self.logger.info("Status bars created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create status bars: {str(e)}")
-            raise
-
-    def create_data_tab(self):
-        """Create and configure data processing tab"""
-        try:
-            # File selection frame
-            file_frame = ttk.LabelFrame(self.data_tab, text="Data File")
-            file_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            ttk.Entry(
-                file_frame,
-                textvariable=self.file_path,
-                width=60
-            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-            
-            ttk.Button(
-                file_frame,
-                text="Browse",
-                command=self.browse_file
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Data processing options
-            self.create_processing_options()
-            
-            # Preview frame
-            self.create_preview_frame()
-            
-            self.logger.info("Data tab created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create data tab: {str(e)}")
-            raise
-
-    def create_processing_options(self):
-        """Create data processing options section"""
-        try:
-            options_frame = ttk.LabelFrame(self.data_tab, text="Processing Options")
-            options_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            # Missing values
-            missing_frame = ttk.Frame(options_frame)
-            missing_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Checkbutton(
-                missing_frame,
-                text="Handle Missing Values",
-                variable=self.handle_missing,
-                command=self.update_missing_options
-            ).pack(side=tk.LEFT)
-            
-            self.missing_method_menu = ttk.OptionMenu(
-                missing_frame,
-                self.missing_method,
-                "median",
-                "median", "mean", "mode", "drop"
-            )
-            self.missing_method_menu.pack(side=tk.LEFT, padx=5)
-            
-            # Outliers
-            outlier_frame = ttk.Frame(options_frame)
-            outlier_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Checkbutton(
-                outlier_frame,
-                text="Remove Outliers",
-                variable=self.remove_outliers,
-                command=self.update_outlier_options
-            ).pack(side=tk.LEFT)
-            
-            self.outlier_method_menu = ttk.OptionMenu(
-                outlier_frame,
-                self.outlier_method,
-                "iqr",
-                "iqr", "zscore", "isolation_forest"
-            )
-            self.outlier_method_menu.pack(side=tk.LEFT, padx=5)
-            
-            # Normalization
-            norm_frame = ttk.Frame(options_frame)
-            norm_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Checkbutton(
-                norm_frame,
-                text="Normalize Features",
-                variable=self.normalize,
-                command=self.update_norm_options
-            ).pack(side=tk.LEFT)
-            
-            self.norm_method_menu = ttk.OptionMenu(
-                norm_frame,
-                self.norm_method,
-                "standard",
-                "standard", "minmax", "robust"
-            )
-            self.norm_method_menu.pack(side=tk.LEFT, padx=5)
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create processing options: {str(e)}")
-            raise
-
-    def create_preview_frame(self):
-        """Create data preview frame"""
-        try:
-            preview_frame = ttk.LabelFrame(self.data_tab, text="Data Preview")
-            preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-            # Add scrollbars
-            preview_scroll_y = ttk.Scrollbar(preview_frame)
-            preview_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-            
-            preview_scroll_x = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL)
-            preview_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Create text widget
-            self.preview_text = tk.Text(
-                preview_frame,
-                wrap=tk.NONE,
-                xscrollcommand=preview_scroll_x.set,
-                yscrollcommand=preview_scroll_y.set
-            )
-            self.preview_text.pack(fill=tk.BOTH, expand=True)
-            
-            # Configure scrollbars
-            preview_scroll_y.config(command=self.preview_text.yview)
-            preview_scroll_x.config(command=self.preview_text.xview)
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create preview frame: {str(e)}")
-            raise
-
-    def find_optimal_clusters(
-        self,
-        method: str = 'elbow',
-        max_k: int = 10,
-        min_k: int = 2,
-        n_init: int = 10
-```
-</rewritten_file>
-    ) -> int:
-import json
-import logging
-import traceback
-from pathlib import Path
-from typing import Dict, List, Optional, Tuple, Union
-import joblib
-from matplotlib.figure import Figure
-import numpy as np
-import pandas as pd
-from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
-from sklearn.ensemble import RandomForestClassifier
-from sklearn.manifold import TSNE
-from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
-from sklearn.decomposition import PCA, FactorAnalysis
-from sklearn.metrics import silhouette_samples, silhouette_score, calinski_harabasz_score
-from scipy.stats import f_oneway, chi2_contingency, ttest_ind
-import matplotlib.pyplot as plt
-import seaborn as sns
-from datetime import datetime
-import tkinter as tk
-from tkinter import ttk, messagebox, filedialog
-from matplotlib.backends.backend_tkagg import FigureCanvasTkAgg, NavigationToolbar2Tk
-import plotly.express as px
-import plotly.graph_objects as go
-from plotly.subplots import make_subplots
-from sklearn.neighbors import NearestNeighbors
-import tqdm
-from kneed import KneeLocator
-from scipy import stats
-import umap.umap_ as umap
-from statsmodels.stats.multitest import multipletests
-import sys
-from scipy.cluster.hierarchy import linkage, dendrogram
-
-# Configure logging
-logging.basicConfig(
-    level=logging.INFO,
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-)
-logger = logging.getLogger(__name__)
-
-# Survey metrics categories
-SURVEY_METRICS = {
-    'news_consumption': [
-        'Trad_News_print', 'Trad_News_online', 'Trad_News_TV', 'Trad_News_radio',
-        'SM_News_1', 'SM_News_2', 'SM_News_3', 'SM_News_4', 'SM_News_5', 'SM_News_6',
-        'News_frequency', 'SM_Sharing'
-    ],
-    'temporal': ['survey_date']
-}
-
-class ClusteringError(Exception):
-    """Custom exception for clustering-related errors"""
-    pass
-
-class VisualizationError(Exception):
-    """Custom exception for visualization-related errors"""
-    pass
-
-class ClusterAnalysisGUI:
-    def __init__(self, master):
-        """Initialize GUI components with enhanced structure and error handling"""
-        # Store root window reference
-        self.master = master
-        self.master.title("Political Psychology Cluster Analysis")
-        self.master.geometry("1200x800")
-        
-        # Configure basic logging first
-        self._setup_logging()
-        
-        try:
-            # Initialize core variables
-            self._initialize_variables()
-            
-            # Configure window minimum size
-            self.master.minsize(800, 600)
-            
-            # Configure grid weights for proper scaling
-            self.master.grid_rowconfigure(0, weight=1)
-            self.master.grid_columnconfigure(0, weight=1)
-            
-            # Setup directories
-            self._setup_directories()
-            
-            # Initialize data variables
-            self.cleaned_data = None
-            self.normalized_data = None
-            self.random_state = 42
-            
-            # Create main container with tabs
-            self.notebook = ttk.Notebook(self.master)
-            self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-            # Initialize tabs
-            self._initialize_tabs()
-            
-            # Create status and progress bars
-            self._create_status_bars()
-            
-        except Exception as e:
-            messagebox.showerror("Initialization Error", f"Failed to initialize application: {str(e)}")
-            raise
-
-    def _setup_logging(self):
-        """Set up logging configuration"""
-        # Create logs directory
-        log_dir = Path("logs")
-        log_dir.mkdir(exist_ok=True)
-        
-        # Create log file with timestamp
-        timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
-        log_file = log_dir / f"cluster_analysis_{timestamp}.log"
-        
-        # Configure logging
-        formatter = logging.Formatter(
-            '%(asctime)s - %(name)s - %(levelname)s - %(message)s'
-        )
-        
-        file_handler = logging.FileHandler(log_file)
-        file_handler.setFormatter(formatter)
-        
-        console_handler = logging.StreamHandler()
-        console_handler.setFormatter(formatter)
-        
-        self.logger = logging.getLogger(__name__)
-        self.logger.setLevel(logging.INFO)
-        self.logger.addHandler(file_handler)
-        self.logger.addHandler(console_handler)
-        
-        self.logger.info("Logging initialized")
-
-    def _initialize_variables(self):
-        """Initialize all GUI variables"""
-        try:
-            # File handling variables
-            self.file_path = tk.StringVar()
-            
-            # Data processing variables
-            self.handle_missing = tk.BooleanVar(value=True)
-            self.remove_outliers = tk.BooleanVar(value=True)
-            self.normalize = tk.BooleanVar(value=True)
-            
-            # Method variables
-            self.missing_method = tk.StringVar(value="median")
-            self.outlier_method = tk.StringVar(value="iqr")
-            self.norm_method = tk.StringVar(value="standard")
-            
-            # Clustering variables
-            self.cluster_method = tk.StringVar(value="kmeans")
-            self.n_clusters = tk.IntVar(value=3)
-            self.eps = tk.DoubleVar(value=0.5)
-            self.min_samples = tk.IntVar(value=5)
-            self.max_iter = tk.IntVar(value=300)
-            
-            # Analysis variables
-            self.analysis_type = tk.StringVar(value="statistical")
-            self.stat_test = tk.StringVar(value="anova")
-            
-            # Plot variables
-            self.plot_type = tk.StringVar(value="distribution")
-            self.dist_feature = tk.StringVar()
-            self.dist_type = tk.StringVar(value="histogram")
-            self.profile_type = tk.StringVar(value="heatmap")
-            self.reduction_method = tk.StringVar(value="pca")
-            self.n_components = tk.IntVar(value=2)
-            self.importance_method = tk.StringVar(value="random_forest")
-            self.n_top_features = tk.IntVar(value=10)
-            
-            # Status variables
-            self.status_var = tk.StringVar(value="Ready")
-            self.progress_var = tk.DoubleVar(value=0)
-            
-            self.logger.info("Variables initialized successfully")
-            
-        except Exception as e:
-            if hasattr(self, 'logger'):
-                self.logger.error(f"Failed to initialize variables: {str(e)}")
-            raise
-
-    def _setup_directories(self):
-        """Create necessary directories"""
-        try:
-            # Define directory paths
-            self.output_dir = Path("output")
-            self.models_dir = self.output_dir / "models"
-            self.plots_dir = self.output_dir / "plots"
-            self.results_dir = self.output_dir / "results"
-            self.temp_dir = self.output_dir / "temp"
-            
-            # Create directories
-            for directory in [self.output_dir, self.models_dir, self.plots_dir, 
-                            self.results_dir, self.temp_dir]:
-                directory.mkdir(parents=True, exist_ok=True)
-            
-            self.logger.info("Directories created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create directories: {str(e)}")
-            raise
-
-    def _initialize_tabs(self):
-        """Initialize and configure all tab components"""
-        try:
-            # Create tab frames
-            self.data_tab = ttk.Frame(self.notebook)
-            self.cluster_tab = ttk.Frame(self.notebook)
-            self.viz_tab = ttk.Frame(self.notebook)
-            self.analysis_tab = ttk.Frame(self.notebook)
-            
-            # Add tabs to notebook
-            self.notebook.add(self.data_tab, text="Data Processing")
-            self.notebook.add(self.cluster_tab, text="Clustering")
-            self.notebook.add(self.viz_tab, text="Visualization")
-            self.notebook.add(self.analysis_tab, text="Analysis")
-            
-            # Create frames for clustering methods before creating cluster tab
-            self.create_kmeans_frame()
-            self.create_dbscan_frame()
-            self.create_hierarchical_frame()
-            
-            # Initialize tab contents
-            self.create_data_tab()
-            self.create_cluster_tab()
-            self.create_viz_tab()
-            self.create_analysis_tab()
-            
-            self.logger.info("Tabs initialized successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to initialize tabs: {str(e)}")
-            raise
-
-    def _create_status_bars(self):
-        """Create and configure status and progress bars"""
-        try:
-            # Status bar
-            self.status_var = tk.StringVar()
-            self.status_bar = ttk.Label(
-                self.master,
-                textvariable=self.status_var,
-                relief=tk.SUNKEN,
-                anchor=tk.W
-            )
-            self.status_bar.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Progress bar
-            self.progress_var = tk.DoubleVar()
-            self.progress_bar = ttk.Progressbar(
-                self.master,
-                variable=self.progress_var,
-                maximum=100,
-                mode='determinate'
-            )
-            self.progress_bar.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Initial status
-            self.status_var.set("Ready")
-            self.progress_var.set(0)
-            
-            self.logger.info("Status bars created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create status bars: {str(e)}")
-            raise
-
-    def create_data_tab(self):
-        """Create and configure data processing tab"""
-        try:
-            # File selection frame
-            file_frame = ttk.LabelFrame(self.data_tab, text="Data File")
-            file_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            ttk.Entry(
-                file_frame,
-                textvariable=self.file_path,
-                width=60
-            ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-            
-            ttk.Button(
-                file_frame,
-                text="Browse",
-                command=self.browse_file
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Data processing options
-            self.create_processing_options()
-            
-            # Preview frame
-            self.create_preview_frame()
-            
-            self.logger.info("Data tab created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create data tab: {str(e)}")
-            raise
-
-    def create_processing_options(self):
-        """Create data processing options section"""
-        try:
-            options_frame = ttk.LabelFrame(self.data_tab, text="Processing Options")
-            options_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            # Missing values
-            missing_frame = ttk.Frame(options_frame)
-            missing_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Checkbutton(
-                missing_frame,
-                text="Handle Missing Values",
-                variable=self.handle_missing,
-                command=self.update_missing_options
-            ).pack(side=tk.LEFT)
-            
-            self.missing_method_menu = ttk.OptionMenu(
-                missing_frame,
-                self.missing_method,
-                "median",
-                "median", "mean", "mode", "drop"
-            )
-            self.missing_method_menu.pack(side=tk.LEFT, padx=5)
-            
-            # Outliers
-            outlier_frame = ttk.Frame(options_frame)
-            outlier_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Checkbutton(
-                outlier_frame,
-                text="Remove Outliers",
-                variable=self.remove_outliers,
-                command=self.update_outlier_options
-            ).pack(side=tk.LEFT)
-            
-            self.outlier_method_menu = ttk.OptionMenu(
-                outlier_frame,
-                self.outlier_method,
-                "iqr",
-                "iqr", "zscore", "isolation_forest"
-            )
-            self.outlier_method_menu.pack(side=tk.LEFT, padx=5)
-            
-            # Normalization
-            norm_frame = ttk.Frame(options_frame)
-            norm_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Checkbutton(
-                norm_frame,
-                text="Normalize Features",
-                variable=self.normalize,
-                command=self.update_norm_options
-            ).pack(side=tk.LEFT)
-            
-            self.norm_method_menu = ttk.OptionMenu(
-                norm_frame,
-                self.norm_method,
-                "standard",
-                "standard", "minmax", "robust"
-            )
-            self.norm_method_menu.pack(side=tk.LEFT, padx=5)
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create processing options: {str(e)}")
-            raise
-
-    def create_preview_frame(self):
-        """Create data preview frame"""
-        try:
-            preview_frame = ttk.LabelFrame(self.data_tab, text="Data Preview")
-            preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-            # Add scrollbars
-            preview_scroll_y = ttk.Scrollbar(preview_frame)
-            preview_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-            
-            preview_scroll_x = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL)
-            preview_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Create text widget
-            self.preview_text = tk.Text(
-                preview_frame,
-                wrap=tk.NONE,
-                xscrollcommand=preview_scroll_x.set,
-                yscrollcommand=preview_scroll_y.set
-            )
-            self.preview_text.pack(fill=tk.BOTH, expand=True)
-            
-            # Configure scrollbars
-            preview_scroll_y.config(command=self.preview_text.yview)
-            preview_scroll_x.config(command=self.preview_text.xview)
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create preview frame: {str(e)}")
-            raise
-
-    def find_optimal_clusters(
-        self,
-        method: str = 'elbow',
-        max_k: int = 10,
-        min_k: int = 2,
-        n_init: int = 10
-    ) -> int:
+    def find_optimal_clusters(self, method: str, max_k: int = 10, min_k: int = 2, n_init: int = 10) -> int:
         """
         Find optimal number of clusters using specified method.
         
@@ -1258,114 +1371,58 @@ class ClusterAnalysisGUI:
             ValueError: If invalid method specified
             RuntimeError: If optimization fails
         """
-        pass
-
-    def create_kmeans_frame(self):
-        """Create and configure k-means clustering frame"""
-        pass
-
-    def create_dbscan_frame(self):
-        """Create and configure DBSCAN clustering frame"""
-        pass
-
-    def create_hierarchical_frame(self):
-        """Create and configure hierarchical clustering frame"""
-        pass
-
-    def create_cluster_tab(self):
-        """Create and configure clustering tab"""
-        pass
-
-    def create_viz_tab(self):
-        """Create and configure visualization tab"""
-        pass
-
-    def create_analysis_tab(self):
-        """Create and configure analysis tab"""
-        pass
-
-    def browse_file(self):
-        """Browse and load data file"""
-        pass
-
-    def update_missing_options(self):
-        """Update missing value handling options"""
-        pass
-
-    def update_outlier_options(self):
-        """Update outlier removal options"""
-        pass
-
-    def update_norm_options(self):
-        """Update normalization options"""
-        pass
-
-    def load_data(self):
-        """Load data from file"""
-        pass
-
-    def handle_missing_values(self):
-        """Handle missing values based on selected method"""
-        pass
-
-    def remove_outliers(self):
-        """Remove outliers based on selected method"""
-        pass
-
-    def normalize_features(self):
-        """Normalize features based on selected method"""
-        pass
-
-    def cluster_data(self):
-        """Perform clustering based on selected method"""
-        pass
-
-    def analyze_clusters(self):
-        """Analyze clusters based on selected method"""
-        pass
-
-    def visualize_clusters(self):
-        """Visualize clusters based on selected method"""
-        pass
-
-    def save_results(self):
-        """Save results to file"""
-        pass
-
-    def run_analysis(self):
-        """Run full analysis pipeline"""
-        pass
-
-if __name__ == "__main__":
-    root = tk.Tk()
-    app = ClusterAnalysisGUI(root)
-    root.mainloop()
-```
-</rewritten_file>
-    ) -> int:
-        """
-        Find optimal number of clusters using specified method.
+        """Find optimal number of clusters using specified method.
         
         Args:
             method: Method to use ('elbow', 'silhouette', or 'gap')
-            max_k: Maximum number of clusters to try
+            max_k: Maximum number of clusters to try 
             min_k: Minimum number of clusters to try
             n_init: Number of initializations for k-means
             
         Returns:
-            Optimal number of clusters
+            int: Optimal number of clusters
             
         Raises:
             ValueError: If normalized_data is None or empty
-            ValueError: If invalid method specified
+            ValueError: If invalid method specified 
             RuntimeError: If optimization fails
         """
-        pass
-```
-</rewritten_file>
-
-    def perform_clustering(self):
-        """Perform clustering analysis with selected parameters"""
+        if self.normalized_data is None or len(self.normalized_data) == 0:
+            raise ValueError("Data must be normalized and non-empty")
+            
+        if method not in ['elbow', 'silhouette', 'gap']:
+            raise ValueError(f"Invalid optimization method: {method}")
+            
+        try:
+            scores = []
+            k_values = range(min_k, max_k + 1)
+            
+            for k in k_values:
+                kmeans = KMeans(n_clusters=k, n_init=n_init, random_state=42)
+                kmeans.fit(self.normalized_data)
+                
+                if method == 'elbow':
+                    scores.append(kmeans.inertia_)
+                elif method == 'silhouette':
+                    score = silhouette_score(self.normalized_data, kmeans.labels_)
+                    scores.append(score)
+                else:  # gap statistic
+                    # Simplified gap statistic implementation
+                    score = calinski_harabasz_score(self.normalized_data, kmeans.labels_)
+                    scores.append(score)
+                    
+            # Find optimal k
+            if method == 'elbow':
+                # Find elbow point using second derivative
+                diffs = np.diff(scores, 2)
+                optimal_k = k_values[np.argmax(diffs) + 2]
+            else:
+                optimal_k = k_values[np.argmax(scores)]
+                
+            return optimal_k
+            
+        except Exception as e:
+            raise RuntimeError(f"Failed to find optimal clusters: {str(e)}")
         if self.normalized_data is None:
             raise ValueError("Data must be normalized before clustering")
             
@@ -1787,382 +1844,370 @@ class ClusterAnalysisGUI:
             self.logger.error(f"Failed to create preview frame: {str(e)}")
             raise
 
-    def find_optimal_clusters(
-        self,
-        method: str = 'elbow',
-        max_k: int = 10,
-        min_k: int = 2,
-        n_init: int = 10
-    ) -> int:
-        """
-        Find optimal number of clusters using specified method.
+def find_optimal_clusters(self, method: str = 'elbow', max_k: int = 10, min_k: int = 2, n_init: int = 10) -> int:
+    """Find optimal number of clusters using specified method.
+    
+    Args:
+        method: Method to use ('elbow' or 'silhouette')
+        max_k: Maximum number of clusters to try
+        min_k: Minimum number of clusters to try
+        n_init: Number of initializations for k-means
         
-        Args:
-            method: Method to use ('elbow', 'silhouette', or 'gap')
-            max_k: Maximum number of clusters to try
-            min_k: Minimum number of clusters to try
-            n_init: Number of initializations for k-means
+    Returns:
+        Optimal number of clusters
+    """
+    if self.normalized_data is None or self.normalized_data.empty:
+        raise ValueError("No normalized data available")
             
-        Returns:
-            Optimal number of clusters
-            
-        Raises:
-            ValueError: If normalized_data is None or empty
-            ValueError: If invalid method specified
-            RuntimeError: If optimization fails
-        """
-        if self.normalized_data is None or self.normalized_data.empty:
-            raise ValueError("No normalized data available")
-            
-        try:
-            # Update GUI status
-            self.status_var.set(f"Finding optimal clusters using {method} method...")
-            self.root.update_idletasks()
+    try:
+        # Update GUI status
+        self.status_var.set(f"Finding optimal clusters using {method} method...")
+        self.root.update_idletasks()
 
-            # Get numeric data
-            numeric_data = self.normalized_data.select_dtypes(
-                include=['float64', 'int64']
+        # Get numeric data
+        numeric_data = self.normalized_data.select_dtypes(
+            include=['float64', 'int64']
+        )
+            
+        if len(numeric_data.columns) == 0:
+            raise ValueError("No numeric columns available for clustering")
+                
+        # Validate input parameters
+        if not isinstance(min_k, int) or min_k < 2:
+            raise ValueError("min_k must be an integer >= 2")
+        if not isinstance(max_k, int) or max_k <= min_k:
+            raise ValueError("max_k must be an integer > min_k")
+        if not isinstance(n_init, int) or n_init < 1:
+            raise ValueError("n_init must be a positive integer")
+                
+        K = range(min_k, max_k + 1)
+            
+        if method == 'elbow':
+            distortions = []
+            inertias = []
+                
+            # Create progress bar
+            progress_var = tk.DoubleVar()
+            progress_bar = ttk.Progressbar(
+                self.stat_frame,
+                variable=progress_var,
+                maximum=len(K)
             )
-            
-            if len(numeric_data.columns) == 0:
-                raise ValueError("No numeric columns available for clustering")
+            progress_bar.pack(fill=tk.X, padx=5, pady=5)
                 
-            # Validate input parameters
-            if not isinstance(min_k, int) or min_k < 2:
-                raise ValueError("min_k must be an integer >= 2")
-            if not isinstance(max_k, int) or max_k <= min_k:
-                raise ValueError("max_k must be an integer > min_k")
-            if not isinstance(n_init, int) or n_init < 1:
-                raise ValueError("n_init must be a positive integer")
+            # Progress bar for long computations
+            with tqdm(total=len(K), desc="Computing elbow curve") as pbar:
+                for k in K:
+                    kmeans = KMeans(
+                        n_clusters=k,
+                        n_init=n_init,
+                        random_state=self.random_state
+                    )
+                    kmeans.fit(numeric_data)
+                    distortions.append(kmeans.inertia_)
+                    inertias.append(kmeans.inertia_)
+                        
+                    # Update progress
+                    progress_var.set(k - min_k + 1)
+                    self.root.update_idletasks()
+                    pbar.update(1)
+                        
+            # Calculate first and second derivatives
+            d1 = np.diff(distortions)
+            d2 = np.diff(d1)
                 
-            K = range(min_k, max_k + 1)
-            
-            if method == 'elbow':
-                distortions = []
-                inertias = []
+            # Find elbow using kneedle algorithm
+            kneedle = KneeLocator(
+                list(K),
+                distortions,
+                curve='convex',
+                direction='decreasing',
+                S=1.0  # Sensitivity parameter
+            )
                 
-                # Create progress bar
-                progress_var = tk.DoubleVar()
-                progress_bar = ttk.Progressbar(
-                    self.stat_frame,
-                    variable=progress_var,
-                    maximum=len(K)
+            if kneedle.elbow is None:
+                # Fallback if no clear elbow found
+                optimal_k = K[len(K)//2]  # Use middle value
+                self.logger.warning("No clear elbow found, using middle value for k")
+            else:
+                optimal_k = kneedle.elbow
+                
+            # Plot elbow curve with derivatives
+            fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15))
+                
+            # Main elbow plot
+            ax1.plot(K, distortions, 'bo-', label='Distortion')
+            ax1.axvline(x=optimal_k, color='r', linestyle='--', 
+                      label=f'Optimal k={optimal_k}')
+            ax1.set_xlabel('Number of Clusters (k)')
+            ax1.set_ylabel('Distortion')
+            ax1.set_title('Elbow Method Analysis')
+            ax1.legend()
+            ax1.grid(True)
+                
+            # Add normalized curve
+            norm_distortions = (distortions - np.min(distortions)) / (np.max(distortions) - np.min(distortions))
+            ax1.plot(K, norm_distortions, 'g--', alpha=0.5, label='Normalized')
+                
+            # Derivatives plot
+            ax2.plot(K[1:], d1, 'g.-', label='First Derivative')
+            ax2.plot(K[2:], d2, 'm.-', label='Second Derivative') 
+            ax2.set_xlabel('Number of Clusters (k)')
+            ax2.set_ylabel('Rate of Change')
+            ax2.set_title('Derivatives Analysis')
+            ax2.legend()
+            ax2.grid(True)
+                
+            # Add percentage change plot
+            pct_changes = np.diff(distortions) / distortions[:-1] * 100
+            ax3.plot(K[1:], pct_changes, 'r.-', label='% Change')
+            ax3.set_xlabel('Number of Clusters (k)')
+            ax3.set_ylabel('Percentage Change')
+            ax3.set_title('Percentage Change in Distortion')
+            ax3.legend()
+            ax3.grid(True)
+                
+            plt.tight_layout()
+                
+            # Save high quality plot
+            plot_path = self.plots_dir / 'elbow_analysis.png'
+            try:
+                plt.savefig(
+                    plot_path,
+                    dpi=300,
+                    bbox_inches='tight',
+                    metadata={
+                        'Title': 'Elbow Analysis',
+                        'Author': 'ClusterAnalysis',
+                        'Created': datetime.now().isoformat()
+                    }
                 )
-                progress_bar.pack(fill=tk.X, padx=5, pady=5)
+                self.logger.info(f"Saved elbow analysis plot to {plot_path}")
+            except Exception as e:
+                self.logger.error(f"Failed to save elbow plot: {str(e)}")
+            plt.close()
                 
-                # Progress bar for long computations
-                with tqdm(total=len(K), desc="Computing elbow curve") as pbar:
+            # Save raw data for later analysis
+            elbow_data = {
+                'k_values': list(K),
+                'distortions': distortions,
+                'first_derivative': d1.tolist(),
+                'second_derivative': d2.tolist(),
+                'pct_changes': pct_changes.tolist(),
+                'optimal_k': optimal_k,
+                'normalized_distortions': norm_distortions.tolist()
+            }
+                
+            # Save elbow analysis data with error handling
+            data_path = self.results_dir / 'elbow_data.json'
+            try:
+                with open(data_path, 'w') as f:
+                    json.dump(elbow_data, f, indent=4)
+                self.logger.info(f"Saved elbow analysis data to {data_path}")
+            except Exception as e:
+                self.logger.error(f"Failed to save elbow data: {str(e)}")
+                raise RuntimeError(f"Could not save elbow data to {data_path}")
+
+        elif method == 'silhouette':
+            # Initialize data structures
+            silhouette_scores = []
+            sample_silhouettes = []
+            silhouette_data = {
+                'k_values': list(K),
+                'silhouette_scores': [],
+                'sample_silhouettes': [],
+                'optimal_k': None
+            }
+                
+            # Create and configure progress bar
+            progress_var = tk.DoubleVar()
+            progress_bar = ttk.Progressbar(
+                self.stat_frame,
+                variable=progress_var,
+                maximum=len(K),
+                mode='determinate',
+                length=200
+            )
+            progress_bar.pack(fill=tk.X, padx=5, pady=5)
+                
+            # Add progress label
+            progress_label = ttk.Label(
+                self.stat_frame, 
+                text="Computing silhouette scores..."
+            )
+            progress_label.pack()
+
+            # Compute silhouette scores with error handling
+            try:
+                with tqdm(total=len(K), desc="Computing silhouette scores") as pbar:
                     for k in K:
+                        # Initialize and fit KMeans
                         kmeans = KMeans(
                             n_clusters=k,
                             n_init=n_init,
-                            random_state=self.random_state
+                            random_state=self.random_state,
+                            max_iter=300
                         )
-                        kmeans.fit(numeric_data)
-                        distortions.append(kmeans.inertia_)
-                        inertias.append(kmeans.inertia_)
-                        
+                            
+                        try:
+                            labels = kmeans.fit_predict(numeric_data)
+                        except Exception as e:
+                            self.logger.error(f"KMeans fitting failed for k={k}: {str(e)}")
+                            raise RuntimeError(f"KMeans clustering failed for k={k}")
+                            
+                        # Calculate silhouette scores
+                        try:
+                            silhouette_avg = silhouette_score(
+                                numeric_data, 
+                                labels,
+                                random_state=self.random_state
+                            )
+                            sample_silhouette_values = silhouette_samples(
+                                numeric_data,
+                                labels
+                            )
+                        except Exception as e:
+                            self.logger.error(f"Silhouette calculation failed for k={k}: {str(e)}")
+                            raise RuntimeError(f"Silhouette score calculation failed for k={k}")
+                            
+                        # Store results
+                        silhouette_scores.append(silhouette_avg)
+                        sample_silhouettes.append(sample_silhouette_values)
+                        silhouette_data['silhouette_scores'].append(float(silhouette_avg))
+                        silhouette_data['sample_silhouettes'].append(sample_silhouette_values.tolist())
+                            
                         # Update progress
                         progress_var.set(k - min_k + 1)
+                        progress_label.config(text=f"Processing k={k}...")
                         self.root.update_idletasks()
                         pbar.update(1)
+                            
+                # Find optimal k
+                optimal_k = K[np.argmax(silhouette_scores)]
+                silhouette_data['optimal_k'] = int(optimal_k)
+                    
+                # Save silhouette analysis results
+                silhouette_path = self.results_dir / 'silhouette_analysis.json'
+                try:
+                    with open(silhouette_path, 'w') as f:
+                        json.dump(silhouette_data, f, indent=4)
+                    self.logger.info(f"Saved silhouette analysis to {silhouette_path}")
+                except Exception as e:
+                    self.logger.error(f"Failed to save silhouette data: {str(e)}")
+                    raise RuntimeError(f"Could not save silhouette data to {silhouette_path}")
                         
-                # Calculate first and second derivatives
-                d1 = np.diff(distortions)
-                d2 = np.diff(d1)
-                
-                # Find elbow using kneedle algorithm
-                kneedle = KneeLocator(
-                    list(K),
-                    distortions,
-                    curve='convex',
-                    direction='decreasing',
-                    S=1.0  # Sensitivity parameter
-                )
-                
-                if kneedle.elbow is None:
-                    # Fallback if no clear elbow found
-                    optimal_k = K[len(K)//2]  # Use middle value
-                    self.logger.warning("No clear elbow found, using middle value for k")
-                else:
-                    optimal_k = kneedle.elbow
-                
-                # Plot elbow curve with derivatives
-                fig, (ax1, ax2, ax3) = plt.subplots(3, 1, figsize=(12, 15))
-                
-                # Main elbow plot
-                ax1.plot(K, distortions, 'bo-', label='Distortion')
-                ax1.axvline(x=optimal_k, color='r', linestyle='--', 
+                # Create visualization
+                fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
+                    
+                # Silhouette score plot
+                ax1.plot(K, silhouette_scores, 'bo-')
+                ax1.axvline(x=optimal_k, color='r', linestyle='--',
                           label=f'Optimal k={optimal_k}')
                 ax1.set_xlabel('Number of Clusters (k)')
-                ax1.set_ylabel('Distortion')
-                ax1.set_title('Elbow Method Analysis')
+                ax1.set_ylabel('Silhouette Score')
+                ax1.set_title('Silhouette Analysis')
                 ax1.legend()
                 ax1.grid(True)
-                
-                # Add normalized curve
-                norm_distortions = (distortions - np.min(distortions)) / (np.max(distortions) - np.min(distortions))
-                ax1.plot(K, norm_distortions, 'g--', alpha=0.5, label='Normalized')
-                
-                # Derivatives plot
-                ax2.plot(K[1:], d1, 'g.-', label='First Derivative')
-                ax2.plot(K[2:], d2, 'm.-', label='Second Derivative') 
-                ax2.set_xlabel('Number of Clusters (k)')
-                ax2.set_ylabel('Rate of Change')
-                ax2.set_title('Derivatives Analysis')
+                    
+                # Sample silhouette plot for optimal k
+                optimal_idx = K.index(optimal_k)
+                optimal_silhouettes = sample_silhouettes[optimal_idx]
+                y_lower = 10
+                    
+                for i in range(optimal_k):
+                    cluster_silhouettes = optimal_silhouettes[labels == i]
+                    cluster_silhouettes.sort()
+                    size = cluster_silhouettes.shape[0]
+                    y_upper = y_lower + size
+                        
+                    color = plt.cm.nipy_spectral(float(i) / optimal_k)
+                    ax2.fill_betweenx(np.arange(y_lower, y_upper),
+                                    0, cluster_silhouettes,
+                                    facecolor=color, alpha=0.7)
+                    y_lower = y_upper + 10
+                        
+                ax2.set_xlabel('Silhouette Coefficient')
+                ax2.set_ylabel('Cluster')
+                ax2.set_title(f'Silhouette Plot for k={optimal_k}')
+                ax2.axvline(x=silhouette_scores[optimal_idx], color='r',
+                          linestyle='--', label='Average Score')
                 ax2.legend()
-                ax2.grid(True)
-                
-                # Add percentage change plot
-                pct_changes = np.diff(distortions) / distortions[:-1] * 100
-                ax3.plot(K[1:], pct_changes, 'r.-', label='% Change')
-                ax3.set_xlabel('Number of Clusters (k)')
-                ax3.set_ylabel('Percentage Change')
-                ax3.set_title('Percentage Change in Distortion')
-                ax3.legend()
-                ax3.grid(True)
-                
+                    
                 plt.tight_layout()
-                
-                # Save high quality plot
-                plot_path = self.plots_dir / 'elbow_analysis.png'
+                    
+                # Save plot
+                plot_path = self.plots_dir / 'silhouette_analysis.png'
                 try:
                     plt.savefig(
                         plot_path,
                         dpi=300,
                         bbox_inches='tight',
                         metadata={
-                            'Title': 'Elbow Analysis',
+                            'Title': 'Silhouette Analysis',
                             'Author': 'ClusterAnalysis',
                             'Created': datetime.now().isoformat()
                         }
                     )
-                    self.logger.info(f"Saved elbow analysis plot to {plot_path}")
+                    self.logger.info(f"Saved silhouette plot to {plot_path}")
                 except Exception as e:
-                    self.logger.error(f"Failed to save elbow plot: {str(e)}")
-                plt.close()
-                
-                # Save raw data for later analysis
-                elbow_data = {
-                    'k_values': list(K),
-                    'distortions': distortions,
-                    'first_derivative': d1.tolist(),
-                    'second_derivative': d2.tolist(),
-                    'pct_changes': pct_changes.tolist(),
-                    'optimal_k': optimal_k,
-                    'normalized_distortions': norm_distortions.tolist()
-                }
-                
-                # Save elbow analysis data with error handling
-                data_path = self.results_dir / 'elbow_data.json'
-                try:
-                    with open(data_path, 'w') as f:
-                        json.dump(elbow_data, f, indent=4)
-                    self.logger.info(f"Saved elbow analysis data to {data_path}")
-                except Exception as e:
-                    self.logger.error(f"Failed to save elbow data: {str(e)}")
-                    raise RuntimeError(f"Could not save elbow data to {data_path}")
-
-            elif method == 'silhouette':
-                # Initialize data structures
-                silhouette_scores = []
-                sample_silhouettes = []
-                silhouette_data = {
-                    'k_values': list(K),
-                    'silhouette_scores': [],
-                    'sample_silhouettes': [],
-                    'optimal_k': None
-                }
-                
-                # Create and configure progress bar
-                progress_var = tk.DoubleVar()
-                progress_bar = ttk.Progressbar(
-                    self.stat_frame,
-                    variable=progress_var,
-                    maximum=len(K),
-                    mode='determinate',
-                    length=200
-                )
-                progress_bar.pack(fill=tk.X, padx=5, pady=5)
-                
-                # Add progress label
-                progress_label = ttk.Label(
-                    self.stat_frame, 
-                    text="Computing silhouette scores..."
-                )
-                progress_label.pack()
-
-                # Compute silhouette scores with error handling
-                try:
-                    with tqdm(total=len(K), desc="Computing silhouette scores") as pbar:
-                        for k in K:
-                            # Initialize and fit KMeans
-                            kmeans = KMeans(
-                                n_clusters=k,
-                                n_init=n_init,
-                                random_state=self.random_state,
-                                max_iter=300
-                            )
-                            
-                            try:
-                                labels = kmeans.fit_predict(numeric_data)
-                            except Exception as e:
-                                self.logger.error(f"KMeans fitting failed for k={k}: {str(e)}")
-                                raise RuntimeError(f"KMeans clustering failed for k={k}")
-                            
-                            # Calculate silhouette scores
-                            try:
-                                silhouette_avg = silhouette_score(
-                                    numeric_data, 
-                                    labels,
-                                    random_state=self.random_state
-                                )
-                                sample_silhouette_values = silhouette_samples(
-                                    numeric_data,
-                                    labels
-                                )
-                            except Exception as e:
-                                self.logger.error(f"Silhouette calculation failed for k={k}: {str(e)}")
-                                raise RuntimeError(f"Silhouette score calculation failed for k={k}")
-                            
-                            # Store results
-                            silhouette_scores.append(silhouette_avg)
-                            sample_silhouettes.append(sample_silhouette_values)
-                            silhouette_data['silhouette_scores'].append(float(silhouette_avg))
-                            silhouette_data['sample_silhouettes'].append(sample_silhouette_values.tolist())
-                            
-                            # Update progress
-                            progress_var.set(k - min_k + 1)
-                            progress_label.config(text=f"Processing k={k}...")
-                            self.root.update_idletasks()
-                            pbar.update(1)
-                            
-                    # Find optimal k
-                    optimal_k = K[np.argmax(silhouette_scores)]
-                    silhouette_data['optimal_k'] = int(optimal_k)
-                    
-                    # Save silhouette analysis results
-                    silhouette_path = self.results_dir / 'silhouette_analysis.json'
-                    try:
-                        with open(silhouette_path, 'w') as f:
-                            json.dump(silhouette_data, f, indent=4)
-                        self.logger.info(f"Saved silhouette analysis to {silhouette_path}")
-                    except Exception as e:
-                        self.logger.error(f"Failed to save silhouette data: {str(e)}")
-                        raise RuntimeError(f"Could not save silhouette data to {silhouette_path}")
-                        
-                    # Create visualization
-                    fig, (ax1, ax2) = plt.subplots(2, 1, figsize=(10, 12))
-                    
-                    # Silhouette score plot
-                    ax1.plot(K, silhouette_scores, 'bo-')
-                    ax1.axvline(x=optimal_k, color='r', linestyle='--',
-                              label=f'Optimal k={optimal_k}')
-                    ax1.set_xlabel('Number of Clusters (k)')
-                    ax1.set_ylabel('Silhouette Score')
-                    ax1.set_title('Silhouette Analysis')
-                    ax1.legend()
-                    ax1.grid(True)
-                    
-                    # Sample silhouette plot for optimal k
-                    optimal_idx = K.index(optimal_k)
-                    optimal_silhouettes = sample_silhouettes[optimal_idx]
-                    y_lower = 10
-                    
-                    for i in range(optimal_k):
-                        cluster_silhouettes = optimal_silhouettes[labels == i]
-                        cluster_silhouettes.sort()
-                        size = cluster_silhouettes.shape[0]
-                        y_upper = y_lower + size
-                        
-                        color = plt.cm.nipy_spectral(float(i) / optimal_k)
-                        ax2.fill_betweenx(np.arange(y_lower, y_upper),
-                                        0, cluster_silhouettes,
-                                        facecolor=color, alpha=0.7)
-                        y_lower = y_upper + 10
-                        
-                    ax2.set_xlabel('Silhouette Coefficient')
-                    ax2.set_ylabel('Cluster')
-                    ax2.set_title(f'Silhouette Plot for k={optimal_k}')
-                    ax2.axvline(x=silhouette_scores[optimal_idx], color='r',
-                              linestyle='--', label='Average Score')
-                    ax2.legend()
-                    
-                    plt.tight_layout()
-                    
-                    # Save plot
-                    plot_path = self.plots_dir / 'silhouette_analysis.png'
-                    try:
-                        plt.savefig(
-                            plot_path,
-                            dpi=300,
-                            bbox_inches='tight',
-                            metadata={
-                                'Title': 'Silhouette Analysis',
-                                'Author': 'ClusterAnalysis',
-                                'Created': datetime.now().isoformat()
-                            }
-                        )
-                        self.logger.info(f"Saved silhouette plot to {plot_path}")
-                    except Exception as e:
-                        self.logger.error(f"Failed to save silhouette plot: {str(e)}")
-                    finally:
-                        plt.close()
-                        
+                    self.logger.error(f"Failed to save silhouette plot: {str(e)}")
                 finally:
-                    # Clean up progress bar
-                    progress_bar.destroy()
-                    progress_label.destroy()
+                    plt.close()
+                        
+            finally:
+                # Clean up progress bar
+                progress_bar.destroy()
+                progress_label.destroy()
                     
-            else:
-                raise ValueError(f"Invalid method: {method}. Must be one of: 'elbow', 'silhouette', 'gap'")
+        else:
+            raise ValueError(f"Invalid method: {method}. Must be one of: 'elbow', 'silhouette', 'gap'")
             
-            # Save optimization results
-            optimization_results = {
-                'method': method,
-                'optimal_k': int(optimal_k),
-                'min_k': min_k,
-                'max_k': max_k,
-                'n_init': n_init,
-                'timestamp': datetime.now().isoformat(),
-                'parameters': {
-                    'random_state': self.random_state,
-                    'n_init': n_init
-                }
+        # Save optimization results
+        optimization_results = {
+            'method': method,
+            'optimal_k': int(optimal_k),
+            'min_k': min_k,
+            'max_k': max_k,
+            'n_init': n_init,
+            'timestamp': datetime.now().isoformat(),
+            'parameters': {
+                'random_state': self.random_state,
+                'n_init': n_init
             }
+        }
             
-            results_path = self.results_dir / 'optimization_results.json'
-            try:
-                with open(results_path, 'w') as f:
-                    json.dump(optimization_results, f, indent=4)
-                self.logger.info(f"Saved optimization results to {results_path}")
-            except Exception as e:
-                self.logger.error(f"Failed to save optimization results: {str(e)}")
-                raise RuntimeError(f"Could not save optimization results to {results_path}")
-            
-            # Update analysis text
-            self.analysis_text.insert(tk.END, "\n=== Cluster Optimization ===\n")
-            self.analysis_text.insert(tk.END, f"Method: {method}\n")
-            self.analysis_text.insert(tk.END, f"Optimal number of clusters: {optimal_k}\n")
-            self.analysis_text.insert(tk.END, f"Search range: {min_k} to {max_k}\n")
-            self.analysis_text.see(tk.END)
-            
-            self.logger.info(f"Optimal number of clusters found: {optimal_k}")
-            self.logger.info(f"Method used: {method}")
-            self.logger.info(f"Results saved to {results_path}")
-            
-            return optimal_k
-            
+        results_path = self.results_dir / 'optimization_results.json'
+        try:
+            with open(results_path, 'w') as f:
+                json.dump(optimization_results, f, indent=4)
+            self.logger.info(f"Saved optimization results to {results_path}")
         except Exception as e:
-            self.logger.error(f"Error finding optimal clusters: {str(e)}")
-            self.logger.error(f"Stack trace:\n{traceback.format_exc()}")
+            self.logger.error(f"Failed to save optimization results: {str(e)}")
+            raise RuntimeError(f"Could not save optimization results to {results_path}")
             
-            # Update GUI with error
-            self.status_var.set(f"Error: {str(e)}")
-            self.analysis_text.insert(tk.END, f"\nERROR: {str(e)}\n")
-            self.analysis_text.see(tk.END)
+        # Update analysis text
+        self.analysis_text.insert(tk.END, "\n=== Cluster Optimization ===\n")
+        self.analysis_text.insert(tk.END, f"Method: {method}\n")
+        self.analysis_text.insert(tk.END, f"Optimal number of clusters: {optimal_k}\n")
+        self.analysis_text.insert(tk.END, f"Search range: {min_k} to {max_k}\n")
+        self.analysis_text.see(tk.END)
             
-            raise RuntimeError(f"Cluster optimization failed: {str(e)}")
+        self.logger.info(f"Optimal number of clusters found: {optimal_k}")
+        self.logger.info(f"Method used: {method}")
+        self.logger.info(f"Results saved to {results_path}")
+            
+        return optimal_k
+            
+    except Exception as e:
+        self.logger.error(f"Error finding optimal clusters: {str(e)}")
+        self.logger.error(f"Stack trace:\n{traceback.format_exc()}")
+            
+        # Update GUI with error
+        self.status_var.set(f"Error: {str(e)}")
+        self.analysis_text.insert(tk.END, f"\nERROR: {str(e)}\n")
+        self.analysis_text.see(tk.END)
+            
+        raise RuntimeError(f"Cluster optimization failed: {str(e)}")
 
     def update_missing_options(self):
         """Update missing value handling options based on checkbox state"""
