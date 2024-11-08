@@ -1,14 +1,82 @@
-analysis_project/
+```bash
+POLITICAL-PSYCH/
+├── config/
+│   └── config.yaml           # Configuration settings
 ├── data/
-│   ├── raw/
-│   ├── processed/
-│   └── examples/
+│   ├── examples/             # Example datasets
+│   │   └── sample_survey.csv # Sample survey data file
+│   ├── processed/            # Processed data outputs
+│   │   ├── cluster_assignments.csv  # Cluster results
+│   │   └── feature_importance.csv   # Feature analysis
+│   └── raw/                  # Raw survey data
+├── documentation/            # Project documentation
+│   ├── api/                 # API documentation
+│   ├── user_guide/         # User manual
+│   └── technical/          # Technical details
 ├── scripts/
 │   └── Python/
-├── tests/
-├── notebooks/
+│       ├── cluster.py        # Main clustering module
+│       ├── visualization.py  # Visualization utilities
+│       └── utils.py          # Helper functions
+├── tests/                    # Unit tests
+│   ├── test_cluster.py
+│   ├── test_visualization.py
+│   └── test_utils.py
+├── notebooks/               # Jupyter notebooks
+│   ├── analysis/           # Analysis notebooks
+│   └── examples/           # Example usage notebooks
 ├── results/
-│   ├── plots/
-│   ├── models/
-│   └── reports/
-└── config/ 
+│   ├── plots/              # Generated visualizations
+│   │   ├── distributions/  # Distribution plots
+│   │   ├── clusters/       # Cluster visualizations
+│   │   └── features/       # Feature importance plots
+│   ├── models/             # Saved model states
+│   │   ├── kmeans/        # K-means models
+│   │   ├── dbscan/        # DBSCAN models
+│   │   └── hierarchical/   # Hierarchical models
+│   └── reports/            # Analysis reports
+│       ├── figures/        # Report figures
+│       └── tables/         # Data tables
+└── requirements.txt         # Project dependencies
+```
+
+POLITICAL-PSYCH/
+├── config/
+│   └── config.yaml           # Configuration settings
+├── data/
+│   ├── examples/             # Example datasets
+│   │   └── sample_survey.csv # Sample survey data file
+│   ├── processed/            # Processed data outputs
+│   │   ├── cluster_assignments.csv  # Cluster results
+│   │   └── feature_importance.csv   # Feature analysis
+│   └── raw/                  # Raw survey data
+├── documentation/            # Project documentation
+│   ├── api/                 # API documentation
+│   ├── user_guide/         # User manual
+│   └── technical/          # Technical details
+├── scripts/
+│   └── Python/
+│       ├── cluster.py        # Main clustering module
+│       ├── visualization.py  # Visualization utilities
+│       └── utils.py          # Helper functions
+├── tests/                    # Unit tests
+│   ├── test_cluster.py
+│   ├── test_visualization.py
+│   └── test_utils.py
+├── notebooks/               # Jupyter notebooks
+│   ├── analysis/           # Analysis notebooks
+│   └── examples/           # Example usage notebooks
+├── results/
+│   ├── plots/              # Generated visualizations
+│   │   ├── distributions/  # Distribution plots
+│   │   ├── clusters/       # Cluster visualizations
+│   │   └── features/       # Feature importance plots
+│   ├── models/             # Saved model states
+│   │   ├── kmeans/        # K-means models
+│   │   ├── dbscan/        # DBSCAN models
+│   │   └── hierarchical/   # Hierarchical models
+│   └── reports/            # Analysis reports
+│       ├── figures/        # Report figures
+│       └── tables/         # Data tables
+└── requirements.txt         # Project dependencies
+```
