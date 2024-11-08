@@ -4,9 +4,12 @@ import traceback
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple, Union
 import joblib
+from matplotlib.figure import Figure
 import numpy as np
 import pandas as pd
 from sklearn.cluster import KMeans, DBSCAN, AgglomerativeClustering
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.manifold import TSNE
 from sklearn.preprocessing import StandardScaler, MinMaxScaler, RobustScaler
 from sklearn.decomposition import PCA, FactorAnalysis
 from sklearn.metrics import silhouette_samples, silhouette_score, calinski_harabasz_score
@@ -24,6 +27,8 @@ from sklearn.neighbors import NearestNeighbors
 import tqdm
 from kneed import KneeLocator
 from scipy import stats
+import umap.umap_ as umap
+from statsmodels.stats.multitest import multipletests
 
 # Configure logging
 logging.basicConfig(
@@ -54,6 +59,18 @@ class ClusterAnalysisGUI:
     def __init__(self, master):
         """Initialize GUI components with enhanced structure and error handling"""
         try:
+            # Store root window reference
+            self.master = master
+            self.master.title("Political Psychology Cluster Analysis")
+            self.master.geometry("1200x800")
+            
+            # Configure window minimum size
+            self.master.minsize(800, 600)
+            
+            # Configure grid weights for proper scaling
+            self.master.grid_rowconfigure(0, weight=1)
+            self.master.grid_columnconfigure(0, weight=1)
+            
             # Initialize main window
             self.master = master
             self.master.title("Political Psychology Cluster Analysis")
@@ -1272,6 +1289,16 @@ class ClusterAnalysisGUI:
             self.plot_frame = ttk.Frame(plot_container)
             self.plot_frame.pack(fill=tk.BOTH, expand=True)
             
+            # Initialize matplotlib figure and canvas
+            self.fig = Figure(figsize=(8, 6), dpi=100)
+            self.canvas = FigureCanvasTkAgg(self.fig, master=self.plot_frame)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            # Add matplotlib toolbar
+            self.toolbar = NavigationToolbar2Tk(self.canvas, self.toolbar_frame)
+            self.toolbar.update()
+            
             # Control buttons
             button_frame = ttk.Frame(self.viz_tab)
             button_frame.pack(fill=tk.X, padx=5, pady=5)
@@ -1294,256 +1321,218 @@ class ClusterAnalysisGUI:
                 command=self.export_plot_data
             ).pack(side=tk.LEFT, padx=5)
             
+            # Initialize plot state variables
+            self.current_plot = None
+            self.plot_data = None
+            
             self.logger.info("Visualization tab created successfully")
             
         except Exception as e:
             self.logger.error(f"Failed to create visualization tab: {str(e)}")
             raise
 
-    def create_analysis_tab(self):
-        """Create and configure analysis tab with statistical tests and reporting"""
+    def generate_plot(self):
+        """Generate visualization based on selected plot type and options"""
         try:
-            # Analysis type selection frame
-            type_frame = ttk.LabelFrame(self.analysis_tab, text="Analysis Type")
-            type_frame.pack(fill=tk.X, padx=5, pady=5)
+            # Clear previous plot
+            self.fig.clear()
             
-            analysis_types = [
-                ("Statistical Tests", "statistical"),
-                ("Feature Importance", "importance"),
-                ("Cluster Stability", "stability"),
-                ("Cluster Validation", "validation")
-            ]
+            # Get selected plot type
+            plot_type = self.plot_type.get()
             
-            for text, value in analysis_types:
-                ttk.Radiobutton(
-                    type_frame,
-                    text=text,
-                    variable=self.analysis_type,
-                    value=value,
-                    command=self.update_analysis_options
-                ).pack(side=tk.LEFT, padx=5)
+            if plot_type == "distribution":
+                self._generate_distribution_plot()
+            elif plot_type == "profile": 
+                self._generate_profile_plot()
+            elif plot_type == "reduction":
+                self._generate_reduction_plot()
+            elif plot_type == "importance":
+                self._generate_importance_plot()
+                
+            # Update canvas
+            self.canvas.draw()
             
-            # Create specific analysis frames
-            self.create_statistical_frame()
-            self.create_importance_analysis_frame()
-            self.create_stability_frame()
-            self.create_validation_frame()
+            self.logger.info(f"Generated {plot_type} plot successfully")
             
-            # Results frame
-            analysis_results = ttk.LabelFrame(self.analysis_tab, text="Analysis Results")
-            analysis_results.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+        except Exception as e:
+            self.logger.error(f"Failed to generate plot: {str(e)}")
+            messagebox.showerror("Error", f"Failed to generate plot: {str(e)}")
+
+    def _generate_distribution_plot(self):
+        """Generate distribution plot for selected feature"""
+        feature = self.dist_feature.get()
+        plot_type = self.dist_type.get()
+        
+        if not feature:
+            raise ValueError("No feature selected")
             
-            # Add scrollbars
-            analysis_scroll_y = ttk.Scrollbar(analysis_results)
-            analysis_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+        data = self.data[feature]
+        labels = self.cluster_labels
+        
+        ax = self.fig.add_subplot(111)
+        
+        if plot_type == "histogram":
+            for label in np.unique(labels):
+                ax.hist(data[labels == label], alpha=0.5, 
+                       label=f'Cluster {label}', bins=30)
+        elif plot_type == "kde":
+            for label in np.unique(labels):
+                sns.kdeplot(data[labels == label], ax=ax,
+                          label=f'Cluster {label}')
+        else:  # box plot
+            ax.boxplot([data[labels == label] 
+                       for label in np.unique(labels)],
+                      labels=[f'Cluster {label}' 
+                             for label in np.unique(labels)])
             
-            analysis_scroll_x = ttk.Scrollbar(analysis_results, orient=tk.HORIZONTAL)
-            analysis_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+        ax.set_title(f'{feature} Distribution by Cluster')
+        ax.set_xlabel(feature)
+        ax.legend()
+        
+        self.plot_data = pd.DataFrame({
+            'Feature': data,
+            'Cluster': labels
+        })
+
+    def _generate_profile_plot(self):
+        """Generate cluster profile visualization"""
+        plot_type = self.profile_type.get()
+        features = [self.feature_listbox.get(i) 
+                   for i in self.feature_listbox.curselection()]
+        
+        if not features:
+            raise ValueError("No features selected")
             
-            # Results text widget
-            self.analysis_text = tk.Text(
-                analysis_results,
-                wrap=tk.NONE,
-                xscrollcommand=analysis_scroll_x.set,
-                yscrollcommand=analysis_scroll_y.set
+        data = self.data[features]
+        labels = self.cluster_labels
+        
+        if plot_type == "heatmap":
+            cluster_means = pd.DataFrame([
+                data[labels == label].mean() 
+                for label in np.unique(labels)
+            ], index=[f'Cluster {label}' for label in np.unique(labels)])
+            
+            ax = self.fig.add_subplot(111)
+            sns.heatmap(cluster_means, cmap='coolwarm', center=0,
+                       annot=True, ax=ax)
+            ax.set_title('Cluster Profiles Heatmap')
+            
+        elif plot_type == "parallel":
+            ax = self.fig.add_subplot(111)
+            pd.plotting.parallel_coordinates(
+                pd.concat([data, pd.Series(labels, name='Cluster')], axis=1),
+                'Cluster', ax=ax)
+            ax.set_title('Parallel Coordinates Plot')
+            
+        else:  # radar chart
+            angles = np.linspace(0, 2*np.pi, len(features), endpoint=False)
+            cluster_means = np.array([
+                data[labels == label].mean() 
+                for label in np.unique(labels)
+            ])
+            
+            ax = self.fig.add_subplot(111, projection='polar')
+            for i, means in enumerate(cluster_means):
+                values = np.concatenate((means, [means[0]]))
+                angles_plot = np.concatenate((angles, [angles[0]]))
+                ax.plot(angles_plot, values, label=f'Cluster {i}')
+                
+            ax.set_xticks(angles)
+            ax.set_xticklabels(features)
+            ax.set_title('Radar Chart of Cluster Profiles')
+            ax.legend()
+            
+        self.plot_data = pd.DataFrame({
+            'Feature': np.repeat(features, len(np.unique(labels))),
+            'Cluster': np.tile(np.unique(labels), len(features)),
+            'Value': cluster_means.flatten()
+        })
+
+    def _generate_reduction_plot(self):
+        """Generate dimensionality reduction visualization"""
+        method = self.reduction_method.get()
+        n_components = self.n_components.get()
+        
+        if method == "pca":
+            reducer = PCA(n_components=n_components)
+        elif method == "tsne":
+            reducer = TSNE(n_components=n_components)
+        else:  # umap
+            reducer = umap.UMAP(n_components=n_components)
+            
+        reduced_data = reducer.fit_transform(self.data)
+        
+        if n_components == 2:
+            ax = self.fig.add_subplot(111)
+            scatter = ax.scatter(reduced_data[:, 0], reduced_data[:, 1],
+                               c=self.cluster_labels, cmap='viridis')
+            ax.set_title(f'{method.upper()} Projection')
+            self.fig.colorbar(scatter, label='Cluster')
+            
+        elif n_components == 3:
+            ax = self.fig.add_subplot(111, projection='3d')
+            scatter = ax.scatter(reduced_data[:, 0], reduced_data[:, 1],
+                               reduced_data[:, 2], c=self.cluster_labels,
+                               cmap='viridis')
+            ax.set_title(f'{method.upper()} Projection')
+            self.fig.colorbar(scatter, label='Cluster')
+            
+        self.plot_data = pd.DataFrame(
+            reduced_data,
+            columns=[f'Component {i+1}' for i in range(n_components)]
+        )
+        self.plot_data['Cluster'] = self.cluster_labels
+
+    def _generate_importance_plot(self):
+        """Generate feature importance visualization"""
+        method = self.importance_method.get()
+        n_features = self.n_top_features.get()
+        
+        if method == "statistical":
+            importances = []
+            pvalues = []
+            for col in self.data.columns:
+                f_stat, p_val = f_oneway(*[
+                    self.data[col][self.cluster_labels == label]
+                    for label in np.unique(self.cluster_labels)
+                ])
+                importances.append(f_stat)
+                pvalues.append(p_val)
+                
+            importance_df = pd.DataFrame({
+                'Feature': self.data.columns,
+                'Importance': importances,
+                'p-value': pvalues
+            })
+            
+        else:  # random forest
+            rf = RandomForestClassifier(n_estimators=100)
+            rf.fit(self.data, self.cluster_labels)
+            
+            importance_df = pd.DataFrame({
+                'Feature': self.data.columns,
+                'Importance': rf.feature_importances_
+            })
+            
+        importance_df = importance_df.nlargest(n_features, 'Importance')
+        
+        ax = self.fig.add_subplot(111)
+        sns.barplot(data=importance_df, x='Importance', y='Feature', ax=ax)
+        ax.set_title('Feature Importance')
+        
+        self.plot_data = importance_df
+
+    def save_plot(self):
+        """Save current plot to file"""
+        try:
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[
+                    ("PNG files", "*.png"),
+                    ("PDF files", "*.pdf"),
+                    ("SVG files", "*.svg")
+                ]
             )
-            self.analysis_text.pack(fill=tk.BOTH, expand=True)
-            
-            # Configure scrollbars
-            analysis_scroll_y.config(command=self.analysis_text.yview)
-            analysis_scroll_x.config(command=self.analysis_text.xview)
-            
-            # Control buttons
-            button_frame = ttk.Frame(self.analysis_tab)
-            button_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            ttk.Button(
-                button_frame,
-                text="Run Analysis",
-                command=self.run_analysis
-            ).pack(side=tk.LEFT, padx=5)
-            
-            ttk.Button(
-                button_frame,
-                text="Export Results",
-                command=self.export_analysis
-            ).pack(side=tk.LEFT, padx=5)
-            
-            ttk.Button(
-                button_frame,
-                text="Generate Report",
-                command=self.generate_report
-            ).pack(side=tk.LEFT, padx=5)
-            
-            self.logger.info("Analysis tab created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create analysis tab: {str(e)}")
-            raise
-
-    def create_kmeans_frame(self):
-        """Create frame for K-means clustering parameters"""
-        try:
-            self.kmeans_frame = ttk.LabelFrame(self.cluster_tab, text="K-means Parameters")
-            
-            # Number of clusters
-            cluster_frame = ttk.Frame(self.kmeans_frame)
-            cluster_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(cluster_frame, text="Number of clusters:").pack(side=tk.LEFT)
-            ttk.Entry(
-                cluster_frame,
-                textvariable=self.n_clusters,
-                width=10
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Maximum iterations
-            iter_frame = ttk.Frame(self.kmeans_frame)
-            iter_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(iter_frame, text="Max iterations:").pack(side=tk.LEFT)
-            self.max_iter = tk.IntVar(value=300)
-            ttk.Entry(
-                iter_frame,
-                textvariable=self.max_iter,
-                width=10
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Initialize method
-            init_frame = ttk.Frame(self.kmeans_frame)
-            init_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(init_frame, text="Initialization:").pack(side=tk.LEFT)
-            self.init_method = tk.StringVar(value="k-means++")
-            ttk.OptionMenu(
-                init_frame,
-                self.init_method,
-                "k-means++",
-                "k-means++", "random"
-            ).pack(side=tk.LEFT, padx=5)
-            
-            self.logger.info("K-means parameter frame created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create K-means frame: {str(e)}")
-            raise
-
-    def create_dbscan_frame(self):
-        """Create frame for DBSCAN clustering parameters"""
-        try:
-            self.dbscan_frame = ttk.LabelFrame(self.cluster_tab, text="DBSCAN Parameters")
-            
-            # Epsilon
-            eps_frame = ttk.Frame(self.dbscan_frame)
-            eps_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(eps_frame, text="Epsilon:").pack(side=tk.LEFT)
-            ttk.Entry(
-                eps_frame,
-                textvariable=self.eps,
-                width=10
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Minimum samples
-            min_samples_frame = ttk.Frame(self.dbscan_frame)
-            min_samples_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(min_samples_frame, text="Min samples:").pack(side=tk.LEFT)
-            ttk.Entry(
-                min_samples_frame,
-                textvariable=self.min_samples,
-                width=10
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Metric
-            metric_frame = ttk.Frame(self.dbscan_frame)
-            metric_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(metric_frame, text="Distance metric:").pack(side=tk.LEFT)
-            self.metric = tk.StringVar(value="euclidean")
-            ttk.OptionMenu(
-                metric_frame,
-                self.metric,
-                "euclidean",
-                "euclidean", "manhattan", "cosine"
-            ).pack(side=tk.LEFT, padx=5)
-            
-            self.logger.info("DBSCAN parameter frame created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create DBSCAN frame: {str(e)}")
-            raise
-
-    def create_hierarchical_frame(self):
-        """Create frame for hierarchical clustering parameters"""
-        try:
-            self.hierarchical_frame = ttk.LabelFrame(
-                self.cluster_tab,
-                text="Hierarchical Clustering Parameters"
-            )
-            
-            # Number of clusters
-            cluster_frame = ttk.Frame(self.hierarchical_frame)
-            cluster_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(cluster_frame, text="Number of clusters:").pack(side=tk.LEFT)
-            self.h_n_clusters = tk.IntVar(value=3)
-            ttk.Entry(
-                cluster_frame,
-                textvariable=self.h_n_clusters,
-                width=10
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Linkage
-            linkage_frame = ttk.Frame(self.hierarchical_frame)
-            linkage_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(linkage_frame, text="Linkage:").pack(side=tk.LEFT)
-            self.linkage = tk.StringVar(value="ward")
-            ttk.OptionMenu(
-                linkage_frame,
-                self.linkage,
-                "ward",
-                "ward", "complete", "average", "single"
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Affinity
-            affinity_frame = ttk.Frame(self.hierarchical_frame)
-            affinity_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(affinity_frame, text="Affinity:").pack(side=tk.LEFT)
-            self.affinity = tk.StringVar(value="euclidean")
-            ttk.OptionMenu(
-                affinity_frame,
-                self.affinity,
-                "euclidean",
-                "euclidean", "manhattan", "cosine"
-            ).pack(side=tk.LEFT, padx=5)
-            
-            self.logger.info("Hierarchical clustering parameter frame created successfully")
-            
-        except Exception as e:
-            self.logger.error(f"Failed to create hierarchical clustering frame: {str(e)}")
-            raise
-
-    def create_distribution_frame(self):
-        """Create frame for distribution plot options"""
-        try:
-            self.dist_frame = ttk.LabelFrame(self.viz_tab, text="Distribution Plot Options")
-            
-            # Feature selection
-            feature_frame = ttk.Frame(self.dist_frame)
-            feature_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            ttk.Label(feature_frame, text="Feature:").pack(side=tk.LEFT)
-            self.dist_feature = tk.StringVar()
-            self.feature_menu = ttk.OptionMenu(
-                feature_frame,
-                self.dist_feature,
-                "",  # default value
-                command=self.update_distribution_plot
-            )
-            self.feature_menu.pack(side=tk.LEFT, padx=5)
             
             # Plot type
             type_frame = ttk.Frame(self.dist_frame)
@@ -1684,18 +1673,13 @@ class ClusterAnalysisGUI:
             method_frame = ttk.Frame(self.importance_frame)
             method_frame.pack(fill=tk.X, padx=5, pady=2)
             
-            self.importance_method = tk.StringVar(value="statistical")
-            ttk.Radiobutton(
+            ttk.Label(method_frame, text="Method:").pack(side=tk.LEFT)
+            self.importance_analysis_method = tk.StringVar(value="random_forest")
+            ttk.OptionMenu(
                 method_frame,
-                text="Statistical Tests",
-                variable=self.importance_method,
-                value="statistical"
-            ).pack(side=tk.LEFT, padx=5)
-            ttk.Radiobutton(
-                method_frame,
-                text="Random Forest",
-                variable=self.importance_method,
-                value="random_forest"
+                self.importance_analysis_method,
+                "random_forest",
+                "random_forest", "mutual_info", "chi2"
             ).pack(side=tk.LEFT, padx=5)
             
             # Parameters frame
@@ -1717,8 +1701,8 @@ class ClusterAnalysisGUI:
             self.logger.error(f"Failed to create feature importance analysis frame: {str(e)}")
             raise
 
-    def create_statistical_frame(self):
-        """Create frame for statistical analysis options"""
+    def export_plot_data(self):
+        """Export data used to generate current plot"""
         try:
             self.stat_frame = ttk.LabelFrame(self.analysis_tab, text="Statistical Analysis Options")
             
@@ -1745,7 +1729,9 @@ class ClusterAnalysisGUI:
             ttk.Entry(
                 alpha_frame,
                 textvariable=self.alpha,
-                width=5
+                width=5,
+                validate='key',
+                validatecommand=(self.register(self.validate_alpha), '%P')
             ).pack(side=tk.LEFT, padx=5)
             
             # Multiple testing correction
@@ -1756,15 +1742,50 @@ class ClusterAnalysisGUI:
             ttk.Checkbutton(
                 correction_frame,
                 text="Apply multiple testing correction",
-                variable=self.correction
+                variable=self.correction,
+                command=self.update_correction_options
             ).pack(side=tk.LEFT)
             
             self.correction_method = tk.StringVar(value="bonferroni")
-            ttk.OptionMenu(
+            self.correction_menu = ttk.OptionMenu(
                 correction_frame,
                 self.correction_method,
                 "bonferroni",
                 "bonferroni", "fdr", "holm"
+            )
+            self.correction_menu.pack(side=tk.LEFT, padx=5)
+            
+            # Results frame
+            results_frame = ttk.Frame(self.stat_frame)
+            results_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            self.results_text = tk.Text(results_frame, height=6, width=50)
+            self.results_text.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            scrollbar = ttk.Scrollbar(results_frame, orient="vertical", 
+                                    command=self.results_text.yview)
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            self.results_text.configure(yscrollcommand=scrollbar.set)
+            
+            # Control buttons
+            button_frame = ttk.Frame(self.stat_frame)
+            button_frame.pack(fill=tk.X, padx=5, pady=5)
+            
+            ttk.Button(
+                button_frame,
+                text="Run Analysis",
+                command=self.run_statistical_analysis
+            ).pack(side=tk.LEFT, padx=5)
+            
+            ttk.Button(
+                button_frame,
+                text="Export Results",
+                command=self.export_statistical_results
+            ).pack(side=tk.LEFT, padx=5)
+            
+            ttk.Button(
+                button_frame,
+                text="Clear Results",
+                command=lambda: self.results_text.delete(1.0, tk.END)
             ).pack(side=tk.LEFT, padx=5)
             
             self.logger.info("Statistical frame created successfully")
@@ -1772,6 +1793,114 @@ class ClusterAnalysisGUI:
         except Exception as e:
             self.logger.error(f"Failed to create statistical frame: {str(e)}")
             raise
+
+    def validate_alpha(self, value):
+        """Validate alpha value is between 0 and 1"""
+        if value == "":
+            return True
+        try:
+            alpha = float(value)
+            return 0 < alpha < 1
+        except ValueError:
+            return False
+
+    def update_stat_options(self, *args):
+        """Update available options based on selected statistical test"""
+        test = self.stat_test.get()
+        if test == "chi2":
+            self.alpha.set(0.05)
+            self.correction.set(False)
+            self.correction_menu.configure(state='disabled')
+        else:
+            self.correction_menu.configure(state='normal')
+
+    def update_correction_options(self):
+        """Enable/disable correction method based on correction checkbox"""
+        if self.correction.get():
+            self.correction_menu.configure(state='normal')
+        else:
+            self.correction_menu.configure(state='disabled')
+
+    def run_statistical_analysis(self):
+        """Run selected statistical test and display results"""
+        try:
+            test = self.stat_test.get()
+            alpha = self.alpha.get()
+            
+            if not self.data or not self.cluster_labels:
+                raise ValueError("No clustering results available")
+                
+            results = []
+            for col in self.data.columns:
+                if test == "anova":
+                    f_stat, p_val = f_oneway(*[
+                        self.data[col][self.cluster_labels == label]
+                        for label in np.unique(self.cluster_labels)
+                    ])
+                    stat = f_stat
+                elif test == "kruskal":
+                    groups = [self.data[col][self.cluster_labels == label] for label in np.unique(self.cluster_labels)]
+                    stat, p_val = stats.kruskal(*groups)
+                else:  # chi2
+                    contingency = pd.crosstab(
+                        pd.qcut(self.data[col], q=4),
+                        self.cluster_labels
+                    )
+                    stat, p_val = chi2_contingency(contingency)[:2]
+                    
+                results.append((col, stat, p_val))
+            
+            # Apply multiple testing correction if selected
+            if self.correction.get() and test != "chi2":
+                p_values = [r[2] for r in results]
+                if self.correction_method.get() == "bonferroni":
+                    corrected_p = multipletests(p_values, alpha, 'bonferroni')[1]
+                elif self.correction_method.get() == "fdr":
+                    corrected_p = multipletests(p_values, alpha, 'fdr_bh')[1]
+                else:  # holm
+                    corrected_p = multipletests(p_values, alpha, 'holm')[1]
+                results = [(r[0], r[1], p) for r, p in zip(results, corrected_p)]
+            
+            # Display results
+            self.results_text.delete(1.0, tk.END)
+            self.results_text.insert(tk.END, f"Statistical Test: {test.upper()}\n")
+            self.results_text.insert(tk.END, f"Significance Level: {alpha}\n\n")
+            self.results_text.insert(tk.END, "Feature\tStatistic\tp-value\tSignificant\n")
+            self.results_text.insert(tk.END, "-" * 50 + "\n")
+            
+            for feature, stat, p_val in sorted(results, key=lambda x: x[2]):
+                significant = "Yes" if p_val < alpha else "No"
+                self.results_text.insert(
+                    tk.END,
+                    f"{feature}\t{stat:.3f}\t{p_val:.3e}\t{significant}\n"
+                )
+            
+            self.statistical_results = pd.DataFrame(
+                results,
+                columns=['Feature', 'Statistic', 'p-value']
+            )
+            
+        except Exception as e:
+            self.logger.error(f"Statistical analysis failed: {str(e)}")
+            messagebox.showerror("Error", f"Statistical analysis failed: {str(e)}")
+
+    def export_statistical_results(self):
+        """Export statistical analysis results to CSV"""
+        try:
+            if not hasattr(self, 'statistical_results'):
+                raise ValueError("No statistical results available")
+                
+            filename = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[("CSV files", "*.csv"), ("All files", "*.*")]
+            )
+            if filename:
+                self.statistical_results.to_csv(filename, index=False)
+                self.logger.info(f"Statistical results exported to {filename}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to export statistical results: {str(e)}")
+            messagebox.showerror("Error", f"Failed to export results: {str(e)}")
 
     def create_importance_analysis_frame(self):
         """Create frame for feature importance analysis options"""
@@ -1848,64 +1977,74 @@ class ClusterAnalysisGUI:
             self.logger.error(f"Failed to create stability frame: {str(e)}")
             raise
 
-    def create_validation_frame(self):
-        """Create frame for cluster validation metrics"""
+    def update_plot_options(self, *args):
+        """Update visible options based on selected plot type"""
         try:
-            self.validation_frame = ttk.LabelFrame(self.analysis_tab, text="Cluster Validation")
+            plot_type = self.plot_type.get()
             
-            # Metrics selection
-            metrics_frame = ttk.Frame(self.validation_frame)
-            metrics_frame.pack(fill=tk.X, padx=5, pady=2)
+            # Hide all frames
+            for frame in [self.dist_frame, self.profile_frame,
+                         self.reduction_frame, self.importance_frame]:
+                frame.pack_forget()
+                
+            # Show relevant frame
+            if plot_type == "distribution":
+                self.dist_frame.pack(fill=tk.X, padx=5, pady=5)
+            elif plot_type == "profile":
+                self.profile_frame.pack(fill=tk.X, padx=5, pady=5)
+            elif plot_type == "reduction":
+                self.reduction_frame.pack(fill=tk.X, padx=5, pady=5)
+            elif plot_type == "importance":
+                self.importance_frame.pack(fill=tk.X, padx=5, pady=5)
+                
+            # Clear previous plot
+            self.fig.clear()
+            self.canvas.draw()
             
-            self.silhouette = tk.BooleanVar(value=True)
-            ttk.Checkbutton(
-                metrics_frame,
-                text="Silhouette Score",
-                variable=self.silhouette
-            ).pack(side=tk.LEFT, padx=5)
-            
-            self.calinski = tk.BooleanVar(value=True)
-            ttk.Checkbutton(
-                metrics_frame,
-                text="Calinski-Harabasz Score",
-                variable=self.calinski
-            ).pack(side=tk.LEFT, padx=5)
-            
-            self.davies = tk.BooleanVar(value=True)
-            ttk.Checkbutton(
-                metrics_frame,
-                text="Davies-Bouldin Score",
-                variable=self.davies
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Cross-validation options
-            cv_frame = ttk.Frame(self.validation_frame)
-            cv_frame.pack(fill=tk.X, padx=5, pady=2)
-            
-            self.use_cv = tk.BooleanVar(value=False)
-            ttk.Checkbutton(
-                cv_frame,
-                text="Use Cross-validation",
-                variable=self.use_cv,
-                command=self.update_cv_options
-            ).pack(side=tk.LEFT)
-            
-            self.n_splits = tk.IntVar(value=5)
-            self.splits_entry = ttk.Entry(
-                cv_frame,
-                textvariable=self.n_splits,
-                width=5,
-                state='disabled'
-            )
-            self.splits_entry.pack(side=tk.LEFT, padx=5)
-            
-            self.logger.info("Validation frame created successfully")
+            self.logger.info(f"Updated plot options for {plot_type}")
             
         except Exception as e:
-            self.logger.error(f"Failed to create validation frame: {str(e)}")
-            raise
+            self.logger.error(f"Failed to update plot options: {str(e)}")
+            messagebox.showerror("Error", f"Failed to update options: {str(e)}")
+
+    def calculate_feature_importance(self, X, labels):
+        """Calculate feature importance using Random Forest"""
+        rf = RandomForestClassifier(n_estimators=100, random_state=42)
+        rf.fit(X, labels)
+        return dict(zip(X.columns, rf.feature_importances_))
+
+    def visualize_tsne(self, X, labels):
+        """Create t-SNE visualization of clusters"""
+        tsne = TSNE(n_components=2, random_state=42)
+        X_tsne = tsne.fit_transform(X)
+        plt.figure(figsize=(10,8))
+        plt.scatter(X_tsne[:,0], X_tsne[:,1], c=labels, cmap='viridis')
+        plt.title('t-SNE visualization of clusters')
+        plt.savefig(self.plots_dir / 'tsne_clusters.png')
+
+    def compare_clusters(self, X, labels):
+        """Perform statistical tests between clusters"""
+        results = {}
+        for col in X.columns:
+            f_stat, p_val = f_oneway(*[X[col][labels==i] for i in np.unique(labels)])
+            results[col] = {'f_statistic': f_stat, 'p_value': p_val}
+        return results
+
+def main():
+    logging.info("Starting Political Psychology Cluster Analysis GUI...")
+    try:
+        root = tk.Tk()
+        logging.info("Created root window")
+        
+        app = ClusterAnalysisGUI(root)
+        logging.info("Initialized GUI application")
+        
+        root.mainloop()
+        logging.info("GUI event loop ended normally")
+        
+    except Exception as e:
+        logging.error(f"GUI initialization failed: {e}")
+        raise
 
 if __name__ == "__main__":
-    root = tk.Tk()
-    app = ClusterAnalysisGUI(root)
-    root.mainloop()
+    main()
