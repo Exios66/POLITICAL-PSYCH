@@ -7,303 +7,477 @@ import sys
 import logging
 import re
 import string
+import warnings
+from typing import List, Tuple, Dict, Any, Optional
+from pathlib import Path
 
 from sklearn.feature_extraction.text import TfidfVectorizer, CountVectorizer
-from sklearn.decomposition import LatentDirichletAllocation
+from sklearn.decomposition import LatentDirichletAllocation, NMF
 from sklearn.model_selection import GridSearchCV
-from sklearn.metrics import silhouette_score
+from sklearn.metrics import silhouette_score, calinski_harabasz_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.cluster import KMeans
 
 import nltk
 from nltk.corpus import stopwords
-from nltk.stem import WordNetLemmatizer
+from nltk.tokenize import word_tokenize, sent_tokenize
+from nltk.stem import WordNetLemmatizer, PorterStemmer
+from nltk.tag import pos_tag
+from nltk.chunk import ne_chunk
 
 import gensim
-from gensim import corpora
-from gensim.models import CoherenceModel
+from gensim import corpora, models
+from gensim.models import CoherenceModel, LdaModel, LsiModel, HdpModel
+from gensim.models.phrases import Phrases, Phraser
 
 import pyLDAvis
-import pyLDAvis.gensim_models as gensimvis
+import pyLDAvis.gensim_models
+import pyLDAvis.sklearn # type: ignore
 
-# Configure logging
+import spacy
+from textblob import TextBlob
+from wordcloud import WordCloud
+
+# Configure logging with more detailed formatting
 logging.basicConfig(
-    level=logging.DEBUG,  # Changed to DEBUG for more detailed log output
-    format='%(asctime)s [%(levelname)s] %(message)s',
+    level=logging.DEBUG,
+    format='%(asctime)s [%(levelname)s] %(name)s - %(funcName)s:%(lineno)d - %(message)s',
     handlers=[
-        logging.StreamHandler(sys.stdout)
+        logging.StreamHandler(sys.stdout),
+        logging.FileHandler('topic_modeling.log')
     ]
 )
 
-# Load necessary NLTK data files
-nltk.download('punkt')
-nltk.download('wordnet')
-nltk.download('stopwords')
+logger = logging.getLogger(__name__)
 
+# Suppress warnings
+warnings.filterwarnings('ignore')
 
-def load_data(file_path):
-    """
-    Load survey data from a CSV file.
+# Download required NLTK resources
+NLTK_RESOURCES = [
+    'punkt', 'wordnet', 'stopwords', 'averaged_perceptron_tagger',
+    'maxent_ne_chunker', 'words', 'omw-1.4'
+]
 
-    Parameters:
-    - file_path (str): Path to the CSV file.
-
-    Returns:
-    - pd.DataFrame: Loaded data.
-    """
-    if not os.path.exists(file_path):
-        logging.error(f"File {file_path} does not exist.")
-        sys.exit(1)
-    
+for resource in NLTK_RESOURCES:
     try:
-        data = pd.read_csv(file_path)
-        logging.info(f"Data loaded successfully with shape {data.shape}.")
-        return data
+        nltk.download(resource, quiet=True)
     except Exception as e:
-        logging.error(f"Error loading data: {e}")
-        sys.exit(1)
+        logger.warning(f"Failed to download NLTK resource {resource}: {str(e)}")
 
+# Load spaCy model
+try:
+    nlp = spacy.load('en_core_web_sm')
+except OSError:
+    logger.info("Downloading spaCy model...")
+    os.system('python -m spacy download en_core_web_sm')
+    nlp = spacy.load('en_core_web_sm')
 
-def preprocess_text(text):
+class TopicModelingPipeline:
     """
-    Preprocess the input text by cleaning, tokenizing, removing stopwords, and lemmatizing.
-
-    Parameters:
-    - text (str): The text to preprocess.
-
-    Returns:
-    - List[str]: List of cleaned tokens.
+    A comprehensive pipeline for topic modeling of survey open-ended responses.
     """
-    # Initialize lemmatizer and stopwords
-    lemmatizer = WordNetLemmatizer()
-    stop_words = set(stopwords.words('english'))
-
-    # Lowercase
-    text = text.lower()
-    # Remove URLs
-    text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
-    # Remove numbers
-    text = re.sub(r'\d+', '', text)
-    # Remove punctuation
-    text = text.translate(str.maketrans('', '', string.punctuation))
-    # Tokenize
-    tokens = nltk.word_tokenize(text)
-    # Remove stopwords and single-character tokens, and lemmatize
-    tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words and len(word) > 1]
     
-    logging.debug(f"Processed text: {' '.join(tokens)}")  # Debug log for processed tokens
-    return tokens
-
-
-def prepare_corpus(data, text_columns):
-    """
-    Prepare the corpus for topic modeling by preprocessing text and creating a dictionary and corpus.
-
-    Parameters:
-    - data (pd.DataFrame): The survey data.
-    - text_columns (List[str]): List of columns containing open-ended responses.
-
-    Returns:
-    - List[List[str]]: Tokenized and cleaned documents.
-    - corpora.Dictionary: Gensim dictionary.
-    - List[List[tuple]]: Corpus in BoW format.
-    """
-    # Combine all text columns into a single list
-    combined_text = data[text_columns].fillna('').agg(' '.join, axis=1).tolist()
-    logging.info("Combined open-ended responses into a single text corpus.")
-
-    # Preprocess each document
-    processed_docs = [preprocess_text(doc) for doc in combined_text]
-    logging.info("Completed text preprocessing (cleaning, tokenizing, stopword removal, lemmatizing).")
-
-    # Create a dictionary representation of the documents.
-    dictionary = corpora.Dictionary(processed_docs)
-    # Filter out extremes to limit the number of features
-    dictionary.filter_extremes(no_below=5, no_above=0.5)
-    logging.info(hi hi  f"Created dictionary with {len(dictionary)} tokens after filtering.")
-
-    # Create the Bag-of-Words corpus
-    corpus = [dictionary.doc2bow(doc) for doc in processed_docs]
-    logging.info("Created Bag-of-Words corpus.")
-    
-    return processed_docs, dictionary, corpus
-
-
-def compute_coherence_values(dictionary, corpus, texts, limit, start=2, step=1):
-    """
-    Compute c_v coherence for various number of topics.
-
-    Parameters:
-    - dictionary (corpora.Dictionary): Gensim dictionary.
-    - corpus (List[List[tuple]]): Corpus in BoW format.
-    - texts (List[List[str]]): Tokenized texts.
-    - limit (int): Max number of topics.
-    - start (int): Starting number of topics.
-    - step (int): Step size.
-
-    Returns:
-    - model_list (List[gensim.models.LdaModel]): List of LDA models.
-    - coherence_values (List[float]): Coherence scores corresponding to the LDA model list.
-    """
-    coherence_values = []
-    model_list = []
-    for num_topics in range(start, limit + 1, step):
+    def __init__(
+        self,
+        input_file: str,
+        output_dir: str,
+        text_columns: List[str],
+        min_df: float = 0.01,
+        max_df: float = 0.95,
+        num_topics_range: Tuple[int, int] = (2, 15),
+        random_state: int = 42
+    ):
+        """
+        Initialize the topic modeling pipeline.
+        
+        Args:
+            input_file: Path to input CSV file
+            output_dir: Directory for output files
+            text_columns: List of column names containing text data
+            min_df: Minimum document frequency for terms
+            max_df: Maximum document frequency for terms
+            num_topics_range: Range of topics to test (min, max)
+            random_state: Random seed for reproducibility
+        """
+        self.input_file = Path(input_file)
+        self.output_dir = Path(output_dir)
+        self.text_columns = text_columns
+        self.min_df = min_df
+        self.max_df = max_df
+        self.num_topics_range = num_topics_range
+        self.random_state = random_state
+        
+        # Create output directory
+        self.output_dir.mkdir(parents=True, exist_ok=True)
+        
+        # Initialize preprocessing tools
+        self.lemmatizer = WordNetLemmatizer()
+        self.stemmer = PorterStemmer()
+        self.stop_words = set(stopwords.words('english'))
+        self.stop_words.update(['would', 'could', 'should', 'might', 'must', 'need'])
+        
+        # Initialize containers for models and results
+        self.data = None
+        self.processed_docs = None
+        self.dictionary = None
+        self.corpus = None
+        self.models = {
+            'lda': None,
+            'nmf': None,
+            'hdp': None,
+            'lsi': None
+        }
+        self.topic_distributions = {}
+        
+    def load_and_validate_data(self) -> pd.DataFrame:
+        """
+        Load and validate the input data.
+        
+        Returns:
+            DataFrame with loaded data
+        """
         try:
-            model = gensim.models.LdaModel(corpus=corpus,
-                                           id2word=dictionary,
-                                           num_topics=num_topics,
-                                           random_state=42,
-                                           update_every=1,
-                                           chunksize=100,
-                                           passes=10,
-                                           alpha='auto',
-                                           per_word_topics=True)
-            model_list.append(model)
-            coherencemodel = CoherenceModel(model=model, texts=texts, dictionary=dictionary, coherence='c_v')
-            coherence = coherencemodel.get_coherence()
-            coherence_values.append(coherence)
-            logging.info(f"Computed coherence for {num_topics} topics: {coherence:.4f}")
+            data = pd.read_csv(self.input_file)
+            logger.info(f"Loaded data with shape {data.shape}")
+            
+            # Validate text columns
+            missing_cols = [col for col in self.text_columns if col not in data.columns]
+            if missing_cols:
+                raise ValueError(f"Missing columns: {missing_cols}")
+            
+            # Check for empty text columns
+            empty_cols = data[self.text_columns].isna().all()
+            if empty_cols.any():
+                logger.warning(f"Columns with all missing values: {empty_cols[empty_cols].index.tolist()}")
+            
+            self.data = data
+            return data
+            
         except Exception as e:
-            logging.error(f"Error computing coherence for {num_topics} topics: {e}")
-    return model_list, coherence_values
+            logger.error(f"Error loading data: {str(e)}")
+            raise
 
+    def preprocess_text(self, text: str) -> List[str]:
+        """
+        Comprehensive text preprocessing pipeline.
+        
+        Args:
+            text: Raw text string
+            
+        Returns:
+            List of processed tokens
+        """
+        if pd.isna(text):
+            return []
+            
+        # Convert to string
+        text = str(text)
+        
+        # Basic cleaning
+        text = text.lower()
+        text = re.sub(r'http\S+|www\S+|https\S+', '', text, flags=re.MULTILINE)
+        text = re.sub(r'\s+', ' ', text)
+        text = re.sub(r'[^\w\s]', '', text)
+        
+        # Tokenization
+        tokens = word_tokenize(text)
+        
+        # Remove stopwords, numbers, and short tokens
+        tokens = [
+            token for token in tokens 
+            if token not in self.stop_words
+            and not token.isnumeric()
+            and len(token) > 2
+        ]
+        
+        # Lemmatization with POS tagging
+        tokens = [
+            self.lemmatizer.lemmatize(token, pos=self._get_wordnet_pos(token))
+            for token in tokens
+        ]
+        
+        # Named Entity Recognition
+        doc = nlp(' '.join(tokens))
+        ner_tokens = [
+            token.text if not token.ent_type_ 
+            else f"{token.ent_type_}_{token.text}"
+            for token in doc
+        ]
+        
+        return ner_tokens
+        
+    def _get_wordnet_pos(self, word: str) -> str:
+        """Get POS tag for lemmatization."""
+        tag = pos_tag([word])[0][1][0].upper()
+        tag_dict = {
+            "J": nltk.corpus.wordnet.ADJ,
+            "N": nltk.corpus.wordnet.NOUN,
+            "V": nltk.corpus.wordnet.VERB,
+            "R": nltk.corpus.wordnet.ADV
+        }
+        return tag_dict.get(tag, nltk.corpus.wordnet.NOUN)
 
-def visualize_coherence(start, limit, step, coherence_values):
-    """
-    Plot coherence scores to help determine the optimal number of topics.
+    def prepare_corpus(self) -> Tuple[List[List[str]], corpora.Dictionary, List[List[Tuple[int, float]]]]:
+        """
+        Prepare text corpus for topic modeling.
+        
+        Returns:
+            Tuple of (processed documents, dictionary, corpus)
+        """
+        # Combine text columns
+        combined_text = self.data[self.text_columns].fillna('').agg(' '.join, axis=1)
+        
+        # Preprocess documents
+        self.processed_docs = [self.preprocess_text(text) for text in combined_text]
+        
+        # Build bigram and trigram models
+        bigram = Phrases(self.processed_docs, min_count=5, threshold=100)
+        trigram = Phrases(bigram[self.processed_docs], threshold=100)
+        
+        bigram_mod = Phraser(bigram)
+        trigram_mod = Phraser(trigram)
+        
+        # Apply bigrams and trigrams
+        self.processed_docs = [
+            trigram_mod[bigram_mod[doc]] for doc in self.processed_docs
+        ]
+        
+        # Create dictionary
+        self.dictionary = corpora.Dictionary(self.processed_docs)
+        
+        # Filter extreme terms
+        self.dictionary.filter_extremes(
+            no_below=int(len(self.processed_docs) * self.min_df),
+            no_above=self.max_df
+        )
+        
+        # Create corpus
+        self.corpus = [
+            self.dictionary.doc2bow(doc) for doc in self.processed_docs
+        ]
+        
+        return self.processed_docs, self.dictionary, self.corpus
 
-    Parameters:
-    - start (int): Starting number of topics.
-    - limit (int): Maximum number of topics.
-    - step (int): Step size.
-    - coherence_values (List[float]): Coherence scores.
-    """
-    x = range(start, limit + 1, step)
-    plt.figure(figsize=(10, 6))
-    plt.plot(x, coherence_values, marker='o')
-    plt.xlabel("Number of Topics")
-    plt.ylabel("Coherence Score")
-    plt.title("Coherence Scores by Number of Topics")
-    plt.xticks(x)
-    plt.grid(True)
-    plt.savefig('cluster_analysis/coherence_scores.png')
-    plt.close()
-    logging.info("Coherence scores plot saved as 'cluster_analysis/coherence_scores.png'.")
+    def train_models(self):
+        """Train multiple topic models."""
+        # LDA
+        self.models['lda'] = LdaModel(
+            corpus=self.corpus,
+            id2word=self.dictionary,
+            num_topics=self._find_optimal_topics(),
+            random_state=self.random_state,
+            alpha='auto',
+            per_word_topics=True,
+            passes=20
+        )
+        
+        # NMF (using sklearn)
+        tfidf_vectorizer = TfidfVectorizer(
+            max_df=self.max_df, 
+            min_df=self.min_df,
+            stop_words='english'
+        )
+        tfidf = tfidf_vectorizer.fit_transform(
+            [' '.join(doc) for doc in self.processed_docs]
+        )
+        
+        self.models['nmf'] = NMF(
+            n_components=self._find_optimal_topics(),
+            random_state=self.random_state
+        ).fit(tfidf)
+        
+        # HDP
+        self.models['hdp'] = HdpModel(
+            corpus=self.corpus,
+            id2word=self.dictionary
+        )
+        
+        # LSI
+        self.models['lsi'] = LsiModel(
+            corpus=self.corpus,
+            id2word=self.dictionary,
+            num_topics=self._find_optimal_topics()
+        )
 
+    def _find_optimal_topics(self) -> int:
+        """
+        Find optimal number of topics using coherence scores.
+        
+        Returns:
+            Optimal number of topics
+        """
+        coherence_scores = []
+        
+        for num_topics in range(self.num_topics_range[0], self.num_topics_range[1] + 1):
+            model = LdaModel(
+                corpus=self.corpus,
+                id2word=self.dictionary,
+                num_topics=num_topics,
+                random_state=self.random_state
+            )
+            
+            coherence_model = CoherenceModel(
+                model=model,
+                texts=self.processed_docs,
+                dictionary=self.dictionary,
+                coherence='c_v'
+            )
+            
+            coherence_scores.append(coherence_model.get_coherence())
+            
+        optimal_topics = self.num_topics_range[0] + np.argmax(coherence_scores)
+        
+        # Plot coherence scores
+        plt.figure(figsize=(10, 6))
+        plt.plot(
+            range(self.num_topics_range[0], self.num_topics_range[1] + 1),
+            coherence_scores,
+            'bo-'
+        )
+        plt.xlabel('Number of Topics')
+        plt.ylabel('Coherence Score')
+        plt.title('Topic Coherence Scores')
+        plt.savefig(self.output_dir / 'coherence_scores.png')
+        plt.close()
+        
+        return optimal_topics
 
-def select_optimal_model(model_list, coherence_values, start, limit, step):
-    """
-    Select the LDA model with the highest coherence score.
+    def analyze_topics(self):
+        """Generate comprehensive topic analysis."""
+        for model_name, model in self.models.items():
+            # Get topic distributions
+            if model_name == 'lda':
+                self.topic_distributions[model_name] = [
+                    dict(model.get_document_topics(bow))
+                    for bow in self.corpus
+                ]
+            
+            # Generate topic visualizations
+            if model_name in ['lda', 'nmf']:
+                self._visualize_topics(model, model_name)
+            
+            # Generate topic summaries
+            self._summarize_topics(model, model_name)
+            
+            # Create word clouds
+            self._create_wordclouds(model, model_name)
 
-    Parameters:
-    - model_list (List[gensim.models.LdaModel]): List of LDA models.
-    - coherence_values (List[float]): Coherence scores.
-    - start (int): Starting number of topics.
-    - limit (int): Maximum number of topics.
-    - step (int): Step size.
+    def _visualize_topics(self, model: Any, model_name: str):
+        """Generate interactive topic visualizations."""
+        if model_name == 'lda':
+            vis = pyLDAvis.gensim_models.prepare(
+                model, self.corpus, self.dictionary
+            )
+        else:
+            vis = pyLDAvis.sklearn_.prepare(
+                model, self.tfidf, self.tfidf_vectorizer
+            )
+            
+        pyLDAvis.save_html(
+            vis,
+            str(self.output_dir / f'{model_name}_visualization.html')
+        )
 
-    Returns:
-    - gensim.models.LdaModel: Optimal LDA model.
-    - int: Number of topics.
-    """
-    max_coherence = max(coherence_values)
-    optimal_index = coherence_values.index(max_coherence)
-    optimal_num_topics = start + optimal_index * step
-    optimal_model = model_list[optimal_index]
-    logging.info(f"Optimal number of topics selected: {optimal_num_topics} with coherence score {max_coherence:.4f}.")
-    return optimal_model, optimal_num_topics
+    def _summarize_topics(self, model: Any, model_name: str):
+        """Generate topic summaries with key metrics."""
+        summaries = []
+        
+        if model_name == 'lda':
+            topics = model.show_topics(formatted=False)
+            for topic_id, topic in topics:
+                terms = [term for term, _ in topic]
+                weights = [weight for _, weight in topic]
+                
+                summary = {
+                    'topic_id': topic_id,
+                    'top_terms': terms[:10],
+                    'weights': weights[:10],
+                    'coherence': self._calculate_topic_coherence(terms)
+                }
+                summaries.append(summary)
+                
+        pd.DataFrame(summaries).to_csv(
+            self.output_dir / f'{model_name}_topic_summaries.csv',
+            index=False
+        )
 
+    def _calculate_topic_coherence(self, terms: List[str]) -> float:
+        """Calculate topic coherence score."""
+        return CoherenceModel(
+            topics=[terms],
+            texts=self.processed_docs,
+            dictionary=self.dictionary,
+            coherence='c_v'
+        ).get_coherence()
 
-def assign_topic_distribution(optimal_model, corpus, num_topics):
-    """
-    Assign topic distribution to each document.
+    def _create_wordclouds(self, model: Any, model_name: str):
+        """Generate word clouds for each topic."""
+        if model_name == 'lda':
+            for topic_id in range(model.num_topics):
+                topic_terms = dict(model.show_topic(topic_id, topn=50))
+                
+                wordcloud = WordCloud(
+                    background_color='white',
+                    width=800,
+                    height=400
+                ).generate_from_frequencies(topic_terms)
+                
+                plt.figure(figsize=(10, 5))
+                plt.imshow(wordcloud, interpolation='bilinear')
+                plt.axis('off')
+                plt.title(f'Topic {topic_id + 1}')
+                plt.savefig(
+                    self.output_dir / f'{model_name}_topic_{topic_id + 1}_wordcloud.png'
+                )
+                plt.close()
 
-    Parameters:
-    - optimal_model (gensim.models.LdaModel): The optimal LDA model.
-    - corpus (List[List[tuple]]): Corpus in BoW format.
-    - num_topics (int): Number of topics.
-
-    Returns:
-    - pd.DataFrame: DataFrame containing topic distribution for each document.
-    """
-    topic_distributions = []
-    for bow in corpus:
-        topic_probs = optimal_model.get_document_topics(bow, minimum_probability=0)
-        topic_probs_sorted = sorted(topic_probs, key=lambda x: x[0])
-        topic_probs_only = [prob for _, prob in topic_probs_sorted]
-        topic_distributions.append(topic_probs_only)
-    
-    topic_df = pd.DataFrame(topic_distributions, columns=[f'Topic_{i+1}' for i in range(num_topics)])
-    logging.info("Assigned topic distributions to each document.")
-    return topic_df
-
-
-def visualize_topics(optimal_model, corpus, dictionary, output_dir='cluster_analysis'):
-    """
-    Visualize the topics using pyLDAvis.
-
-    Parameters:
-    - optimal_model (gensim.models.LdaModel): The optimal LDA model.
-    - corpus (List[List[tuple]]): Corpus in BoW format.
-    - dictionary (corpora.Dictionary): Gensim dictionary.
-    - output_dir (str): Directory to save the visualization.
-    """
-    try:
-        lda_display = gensimvis.prepare(optimal_model, corpus, dictionary, sort_topics=False)
-        pyLDAvis.save_html(lda_display, os.path.join(output_dir, 'lda_visualization.html'))
-        logging.info("LDA visualization saved as 'cluster_analysis/lda_visualization.html'.")
-    except Exception as e:
-        logging.error(f"Error creating LDA visualization: {e}")
-
+    def save_results(self):
+        """Save all results and models."""
+        # Save models
+        for model_name, model in self.models.items():
+            model.save(str(self.output_dir / f'{model_name}_model.pkl'))
+        
+        # Save topic distributions
+        for model_name, distributions in self.topic_distributions.items():
+            pd.DataFrame(distributions).to_csv(
+                self.output_dir / f'{model_name}_document_topics.csv'
+            )
+        
+        # Save processed documents
+        with open(self.output_dir / 'processed_documents.txt', 'w') as f:
+            for doc in self.processed_docs:
+                f.write(' '.join(doc) + '\n')
 
 def main():
-    # File paths
-    input_file = 'survey_data.csv'
-    output_dir = 'cluster_analysis'
-    topic_output_file = 'topic_distributions.csv'
-
-    # Create output directory if not exists
-    if not os.path.exists(output_dir):
-        os.makedirs(output_dir)
-        logging.info(f"Created directory '{output_dir}' for analysis outputs.")
-
-    # Load data
-    data = load_data(input_file)
-
-    # Define open-ended response columns
-    text_columns = ['Define_fake_news_prop', 'Detect_news_verification']
-    missing_columns = [col for col in text_columns if col not in data.columns]
-    if missing_columns:
-        logging.error(f"The following required text columns are missing from the data: {missing_columns}")
-        sys.exit(1)
+    """Main execution function."""
+    # Configuration
+    config = {
+        'input_file': 'data/survey_data.csv',
+        'output_dir': 'results/topic_modeling',
+        'text_columns': ['open_ended_response_1', 'open_ended_response_2'],
+        'min_df': 0.01,
+        'max_df': 0.95,
+        'num_topics_range': (2, 15),
+        'random_state': 42
+    }
     
-    # Prepare corpus
-    processed_docs, dictionary, corpus = prepare_corpus(data, text_columns)
-
-    # Compute coherence values to determine optimal number of topics
-    start, limit, step = 2, 10, 1
-    model_list, coherence_values = compute_coherence_values(dictionary, corpus, processed_docs, limit, start, step)
-
-    # Visualize coherence scores
-    visualize_coherence(start, limit, step, coherence_values)
-
-    # Select the optimal model
-    optimal_model, optimal_num_topics = select_optimal_model(model_list, coherence_values, start, limit, step)
-
-    # Visualize topics with pyLDAvis
-    visualize_topics(optimal_model, corpus, dictionary, output_dir=output_dir)
-
-    # Assign topic distributions to documents
-    topic_df = assign_topic_distribution(optimal_model, corpus, optimal_num_topics)
-
-    # Save topic distributions
-    topic_df.to_csv(os.path.join(output_dir, topic_output_file), index=False)
-    logging.info(f"Topic distributions saved as '{os.path.join(output_dir, topic_output_file)}'.")
-
-    # Optionally, save the LDA model for future use
-    optimal_model.save(os.path.join(output_dir, f'lda_model_{optimal_num_topics}_topics.model'))
-    logging.info(f"Optimal LDA model saved as '{os.path.join(output_dir, f'lda_model_{optimal_num_topics}_topics.model')}'.")
-
-    logging.info("Topic modeling completed successfully.")
-
+    try:
+        # Initialize pipeline
+        pipeline = TopicModelingPipeline(**config)
+        
+        # Execute pipeline
+        pipeline.load_and_validate_data()
+        pipeline.prepare_corpus()
+        pipeline.train_models()
+        pipeline.analyze_topics()
+        pipeline.save_results()
+        
+        logger.info("Topic modeling pipeline completed successfully")
+        
+    except Exception as e:
+        logger.error(f"Pipeline failed: {str(e)}", exc_info=True)
+        sys.exit(1)
 
 if __name__ == "__main__":
     main()
