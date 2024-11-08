@@ -1,0 +1,37 @@
+2024-11-08 09:47:36,534 - __main__ - INFO - Logging initialized
+2024-11-08 09:47:36,534 - __main__ - INFO - Initializing GUI variables
+2024-11-08 09:47:36,535 - __main__ - INFO - GUI variables initialized successfully
+2024-11-08 09:47:36,535 - __main__ - INFO - Setting up directories
+2024-11-08 09:47:36,535 - __main__ - INFO - Directories created successfully
+2024-11-08 09:47:36,535 - __main__ - INFO - Initializing tabs
+2024-11-08 09:47:36,543 - __main__ - ERROR - Failed to create data tab: 'ClusterAnalysisGUI' object has no attribute 'browse_file'
+2024-11-08 09:47:36,543 - __main__ - ERROR - Failed to initialize tabs: 'ClusterAnalysisGUI' object has no attribute 'browse_file'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 266, in _initialize_tabs
+    self.create_data_tab()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 626, in create_data_tab
+    command=self.browse_file
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'browse_file'
+
+2024-11-08 09:47:36,544 - __main__ - ERROR - Failed to initialize ClusterAnalysisGUI: 'ClusterAnalysisGUI' object has no attribute 'browse_file'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 117, in __init__
+    self._initialize_tabs()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 266, in _initialize_tabs
+    self.create_data_tab()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 626, in create_data_tab
+    command=self.browse_file
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'browse_file'
+
+2024-11-08 09:50:47,865 - __main__ - CRITICAL - Failed to start application: 'ClusterAnalysisGUI' object has no attribute 'browse_file'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 932, in main
+    )
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 117, in __init__
+    self._initialize_tabs()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 266, in _initialize_tabs
+    self.create_data_tab()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 626, in create_data_tab
+    command=self.browse_file
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'browse_file'
+

@@ -1,0 +1,24 @@
+2024-11-08 10:03:35,136 - __main__ - INFO - Logging initialized
+2024-11-08 10:03:35,136 - __main__ - INFO - Initializing GUI variables
+2024-11-08 10:03:35,136 - __main__ - INFO - GUI variables initialized successfully
+2024-11-08 10:03:35,137 - __main__ - INFO - Setting up directories
+2024-11-08 10:03:35,137 - __main__ - INFO - Directories created successfully
+2024-11-08 10:03:35,144 - __main__ - ERROR - Failed to create data tab: 'ClusterAnalysisGUI' object has no attribute 'process_data'
+2024-11-08 10:03:35,144 - __main__ - ERROR - Failed to initialize ClusterAnalysisGUI: 'ClusterAnalysisGUI' object has no attribute 'process_data'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 135, in __init__
+    self.create_data_tab()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 651, in create_data_tab
+    command=self.process_data
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'process_data'
+
+2024-11-08 10:03:39,936 - __main__ - CRITICAL - Failed to start application: 'ClusterAnalysisGUI' object has no attribute 'process_data'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 1234, in main
+    app = ClusterAnalysisGUI(root)
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 135, in __init__
+    self.create_data_tab()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 651, in create_data_tab
+    command=self.process_data
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'process_data'
+

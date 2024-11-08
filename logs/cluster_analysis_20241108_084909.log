@@ -1,0 +1,13 @@
+2024-11-08 08:49:09,994 - __main__ - INFO - Logging initialized
+2024-11-08 08:49:09,994 - __main__ - INFO - Variables initialized successfully
+2024-11-08 08:49:09,995 - __main__ - INFO - Directories created successfully
+2024-11-08 08:49:09,997 - __main__ - INFO - K-means frame created successfully
+2024-11-08 08:49:09,997 - __main__ - INFO - DBSCAN frame created successfully
+2024-11-08 08:49:10,001 - __main__ - INFO - Hierarchical clustering frame created successfully
+2024-11-08 08:49:10,007 - __main__ - INFO - Data tab created successfully
+2024-11-08 08:49:10,008 - __main__ - INFO - Cluster tab created successfully
+2024-11-08 08:49:10,009 - __main__ - INFO - Distribution frame created successfully
+2024-11-08 08:49:10,010 - __main__ - INFO - Profile frame created successfully
+2024-11-08 08:49:10,010 - __main__ - ERROR - Failed to create reduction frame: 'ClusterAnalysisGUI' object has no attribute 'update_reduction_options'
+2024-11-08 08:49:10,010 - __main__ - ERROR - Failed to create visualization tab: 'ClusterAnalysisGUI' object has no attribute 'update_reduction_options'
+2024-11-08 08:49:10,010 - __main__ - ERROR - Failed to initialize tabs: 'ClusterAnalysisGUI' object has no attribute 'update_reduction_options'

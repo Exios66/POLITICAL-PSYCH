@@ -1,0 +1,25 @@
+2024-11-08 09:55:08,559 - __main__ - INFO - Logging initialized
+2024-11-08 09:55:08,559 - __main__ - INFO - Initializing GUI variables
+2024-11-08 09:55:08,559 - __main__ - INFO - GUI variables initialized successfully
+2024-11-08 09:55:08,559 - __main__ - INFO - Setting up directories
+2024-11-08 09:55:08,559 - __main__ - INFO - Directories created successfully
+2024-11-08 09:55:08,575 - __main__ - INFO - Data tab created successfully
+2024-11-08 09:55:08,575 - __main__ - ERROR - Failed to create cluster tab: 'ClusterAnalysisGUI' object has no attribute 'update_cluster_options'
+2024-11-08 09:55:08,576 - __main__ - ERROR - Failed to initialize ClusterAnalysisGUI: 'ClusterAnalysisGUI' object has no attribute 'update_cluster_options'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 132, in __init__
+    self.create_cluster_tab()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 693, in create_cluster_tab
+    command=self.update_cluster_options
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'update_cluster_options'
+
+2024-11-08 09:55:14,327 - __main__ - CRITICAL - Failed to start application: 'ClusterAnalysisGUI' object has no attribute 'update_cluster_options'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 1327, in main
+    app = ClusterAnalysisGUI(root)
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 132, in __init__
+    self.create_cluster_tab()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 693, in create_cluster_tab
+    command=self.update_cluster_options
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'update_cluster_options'
+

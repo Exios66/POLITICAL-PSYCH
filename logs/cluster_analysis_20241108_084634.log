@@ -1,0 +1,10 @@
+2024-11-08 08:46:34,898 - __main__ - INFO - Logging initialized
+2024-11-08 08:46:34,899 - __main__ - INFO - Variables initialized successfully
+2024-11-08 08:46:34,899 - __main__ - INFO - Directories created successfully
+2024-11-08 08:46:34,901 - __main__ - INFO - K-means frame created successfully
+2024-11-08 08:46:34,902 - __main__ - INFO - DBSCAN frame created successfully
+2024-11-08 08:46:34,905 - __main__ - INFO - Hierarchical clustering frame created successfully
+2024-11-08 08:46:34,911 - __main__ - INFO - Data tab created successfully
+2024-11-08 08:46:34,912 - __main__ - INFO - Cluster tab created successfully
+2024-11-08 08:46:34,912 - __main__ - ERROR - Failed to create visualization tab: 'ClusterAnalysisGUI' object has no attribute 'create_distribution_frame'
+2024-11-08 08:46:34,913 - __main__ - ERROR - Failed to initialize tabs: 'ClusterAnalysisGUI' object has no attribute 'create_distribution_frame'
