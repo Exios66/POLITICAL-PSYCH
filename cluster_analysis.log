@@ -1,0 +1,5 @@
+2024-11-08 01:01:22,842 [ERROR] Error in clustering: 'ClusteringGUI' object has no attribute 'plot_button'
+2024-11-08 01:01:24,654 [ERROR] Error exporting results: 'ClusteringGUI' object has no attribute '_generate_cluster_descriptions'
+2024-11-08 01:03:02,217 [INFO] Generated description for Cluster 0: low Trad News Print, high News 1 (49.4% of samples)
+2024-11-08 01:03:02,220 [INFO] Generated description for Cluster 1: low Trad News Online, low News 1, high News Frequency (25.3% of samples)
+2024-11-08 01:03:02,222 [INFO] Generated description for Cluster 2: high Trad News Tv, low News Frequency, high Trad News Online (25.3% of samples)

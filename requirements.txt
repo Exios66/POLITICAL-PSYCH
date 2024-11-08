@@ -42,3 +42,8 @@ notebook>=7.0.6
 # GUI Requirements
 tkinter  # Usually comes with Python
 Pillow>=10.0.0  # For image handling in GUI
+
+# Additional GUI and Report Generation
+pdfkit>=1.0.0
+WeasyPrint>=54.3
+reportlab>=3.6.12

@@ -2,7 +2,7 @@ import pytest
 import numpy as np
 import pandas as pd
 from scripts.Python.cluster import ClusterAnalysis
-from scripts.Python.generate_example_data import generate_survey_data
+from data.examples.generate_example_data import generate_survey_data
 
 @pytest.fixture
 def sample_data():
