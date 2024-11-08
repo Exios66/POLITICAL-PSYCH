@@ -384,12 +384,15 @@ class TopicModelingPipeline:
             # Initialize metrics data list
             metrics_data = []
             
-            # Add average distances
-            metrics.update({
-                f'avg_distance_{metric}': dist
-                for metric, dist in v['avg_distances'].items()
-            })
-            metrics_data.append(metrics)
+            # Iterate over analysis results to add average distances
+            for num_topics, v in self.analysis.items():
+                metrics = {}
+                metrics.update({
+                    f'avg_distance_{metric}': dist
+                    for metric, dist in v['avg_distances'].items()
+                })
+                metrics_data.append(metrics)
+            
             return self.corpus
                 
             metrics_df = pd.DataFrame(metrics_data)
