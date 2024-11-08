@@ -26,12 +26,18 @@ import pyLDAvis.gensim_models as gensimvis
 
 # Configure logging
 logging.basicConfig(
-    level=logging.INFO,
+    level=logging.DEBUG,  # Changed to DEBUG for more detailed log output
     format='%(asctime)s [%(levelname)s] %(message)s',
     handlers=[
         logging.StreamHandler(sys.stdout)
     ]
 )
+
+# Load necessary NLTK data files
+nltk.download('punkt')
+nltk.download('wordnet')
+nltk.download('stopwords')
+
 
 def load_data(file_path):
     """
@@ -54,6 +60,7 @@ def load_data(file_path):
     except Exception as e:
         logging.error(f"Error loading data: {e}")
         sys.exit(1)
+
 
 def preprocess_text(text):
     """
@@ -82,7 +89,9 @@ def preprocess_text(text):
     # Remove stopwords and single-character tokens, and lemmatize
     tokens = [lemmatizer.lemmatize(word) for word in tokens if word not in stop_words and len(word) > 1]
     
+    logging.debug(f"Processed text: {' '.join(tokens)}")  # Debug log for processed tokens
     return tokens
+
 
 def prepare_corpus(data, text_columns):
     """
@@ -109,13 +118,14 @@ def prepare_corpus(data, text_columns):
     dictionary = corpora.Dictionary(processed_docs)
     # Filter out extremes to limit the number of features
     dictionary.filter_extremes(no_below=5, no_above=0.5)
-    logging.info(f"Created dictionary with {len(dictionary)} tokens after filtering.")
+    logging.info(hi hi  f"Created dictionary with {len(dictionary)} tokens after filtering.")
 
     # Create the Bag-of-Words corpus
     corpus = [dictionary.doc2bow(doc) for doc in processed_docs]
     logging.info("Created Bag-of-Words corpus.")
     
     return processed_docs, dictionary, corpus
+
 
 def compute_coherence_values(dictionary, corpus, texts, limit, start=2, step=1):
     """
@@ -136,21 +146,25 @@ def compute_coherence_values(dictionary, corpus, texts, limit, start=2, step=1):
     coherence_values = []
     model_list = []
     for num_topics in range(start, limit + 1, step):
-        model = gensim.models.LdaModel(corpus=corpus,
-                                       id2word=dictionary,
-                                       num_topics=num_topics,
-                                       random_state=42,
-                                       update_every=1,
-                                       chunksize=100,
-                                       passes=10,
-                                       alpha='auto',
-                                       per_word_topics=True)
-        model_list.append(model)
-        coherencemodel = CoherenceModel(model=model, texts=texts, dictionary=dictionary, coherence='c_v')
-        coherence = coherencemodel.get_coherence()
-        coherence_values.append(coherence)
-        logging.info(f"Computed coherence for {num_topics} topics: {coherence:.4f}")
+        try:
+            model = gensim.models.LdaModel(corpus=corpus,
+                                           id2word=dictionary,
+                                           num_topics=num_topics,
+                                           random_state=42,
+                                           update_every=1,
+                                           chunksize=100,
+                                           passes=10,
+                                           alpha='auto',
+                                           per_word_topics=True)
+            model_list.append(model)
+            coherencemodel = CoherenceModel(model=model, texts=texts, dictionary=dictionary, coherence='c_v')
+            coherence = coherencemodel.get_coherence()
+            coherence_values.append(coherence)
+            logging.info(f"Computed coherence for {num_topics} topics: {coherence:.4f}")
+        except Exception as e:
+            logging.error(f"Error computing coherence for {num_topics} topics: {e}")
     return model_list, coherence_values
+
 
 def visualize_coherence(start, limit, step, coherence_values):
     """
@@ -163,7 +177,7 @@ def visualize_coherence(start, limit, step, coherence_values):
     - coherence_values (List[float]): Coherence scores.
     """
     x = range(start, limit + 1, step)
-    plt.figure(figsize=(10,6))
+    plt.figure(figsize=(10, 6))
     plt.plot(x, coherence_values, marker='o')
     plt.xlabel("Number of Topics")
     plt.ylabel("Coherence Score")
@@ -173,6 +187,7 @@ def visualize_coherence(start, limit, step, coherence_values):
     plt.savefig('cluster_analysis/coherence_scores.png')
     plt.close()
     logging.info("Coherence scores plot saved as 'cluster_analysis/coherence_scores.png'.")
+
 
 def select_optimal_model(model_list, coherence_values, start, limit, step):
     """
@@ -195,6 +210,7 @@ def select_optimal_model(model_list, coherence_values, start, limit, step):
     optimal_model = model_list[optimal_index]
     logging.info(f"Optimal number of topics selected: {optimal_num_topics} with coherence score {max_coherence:.4f}.")
     return optimal_model, optimal_num_topics
+
 
 def assign_topic_distribution(optimal_model, corpus, num_topics):
     """
@@ -219,6 +235,7 @@ def assign_topic_distribution(optimal_model, corpus, num_topics):
     logging.info("Assigned topic distributions to each document.")
     return topic_df
 
+
 def visualize_topics(optimal_model, corpus, dictionary, output_dir='cluster_analysis'):
     """
     Visualize the topics using pyLDAvis.
@@ -229,9 +246,13 @@ def visualize_topics(optimal_model, corpus, dictionary, output_dir='cluster_anal
     - dictionary (corpora.Dictionary): Gensim dictionary.
     - output_dir (str): Directory to save the visualization.
     """
-    lda_display = gensimvis.prepare(optimal_model, corpus, dictionary, sort_topics=False)
-    pyLDAvis.save_html(lda_display, os.path.join(output_dir, 'lda_visualization.html'))
-    logging.info("LDA visualization saved as 'cluster_analysis/lda_visualization.html'.")
+    try:
+        lda_display = gensimvis.prepare(optimal_model, corpus, dictionary, sort_topics=False)
+        pyLDAvis.save_html(lda_display, os.path.join(output_dir, 'lda_visualization.html'))
+        logging.info("LDA visualization saved as 'cluster_analysis/lda_visualization.html'.")
+    except Exception as e:
+        logging.error(f"Error creating LDA visualization: {e}")
+
 
 def main():
     # File paths
@@ -282,6 +303,7 @@ def main():
     logging.info(f"Optimal LDA model saved as '{os.path.join(output_dir, f'lda_model_{optimal_num_topics}_topics.model')}'.")
 
     logging.info("Topic modeling completed successfully.")
+
 
 if __name__ == "__main__":
     main()
