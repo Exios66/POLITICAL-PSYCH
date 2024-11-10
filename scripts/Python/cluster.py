@@ -1797,7 +1797,10 @@ class ClusterAnalysisGUI:
             
             # Calculate feature importance
             if method == "random_forest":
-                clf = RandomForestClassifier(n_estimators=100, random_state=self.random_state)
+                clf = RandomForestClassifier(
+                    n_estimators=100,
+                    random_state=self.random_state
+                )
                 clf.fit(self.normalized_data, self.cluster_labels)
                 importances = clf.feature_importances_
                 
@@ -1815,18 +1818,24 @@ class ClusterAnalysisGUI:
                     self.normalized_data,
                     self.cluster_labels
                 )
-                
+            
             # Create importance DataFrame
             importance_df = pd.DataFrame({
                 'Feature': self.normalized_data.columns,
                 'Importance': importances
             })
-            importance_df = importance_df.nlargest(n_features, 'Importance')
+            
+            # Sort and select top features
+            importance_df = importance_df.sort_values(
+                'Importance',
+                ascending=False
+            ).head(n_features)
             
             # Store results
-            self.importance_results = {
+            self.analysis_results = {
+                'type': 'feature_importance',
                 'method': method,
-                'importances': importance_df
+                'results': importance_df
             }
             
             # Create plot
@@ -1842,6 +1851,460 @@ class ClusterAnalysisGUI:
         except Exception as e:
             self.logger.error(f"Failed to generate importance plot: {str(e)}")
             raise
+
+    def save_plot(self):
+        """Save the current plot to a file"""
+        try:
+            if not hasattr(self, 'current_plot'):
+                raise ValueError("No plot available to save")
+
+            # Open file dialog for saving
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".png",
+                filetypes=[
+                    ("PNG files", "*.png"),
+                    ("PDF files", "*.pdf"),
+                    ("SVG files", "*.svg"),
+                    ("All files", "*.*")
+                ],
+                title="Save Plot As"
+            )
+            
+            if file_path:
+                # Save the plot
+                self.current_plot.savefig(
+                    file_path,
+                    dpi=300,
+                    bbox_inches='tight'
+                )
+                
+                self.logger.info(f"Plot saved to {file_path}")
+                self.status_var.set(f"Plot saved to {file_path}")
+                messagebox.showinfo("Success", f"Plot saved to {file_path}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to save plot: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save plot: {str(e)}")
+
+    def run_analysis(self):
+        """Run the selected analysis on the clustered data"""
+        try:
+            if self.normalized_data is None or self.cluster_labels is None:
+                raise ValueError("No clustering results available")
+
+            analysis_type = self.analysis_type.get()
+            
+            if analysis_type == "statistical":
+                self._run_statistical_analysis()
+            elif analysis_type == "stability":
+                self._run_stability_analysis()
+            else:  # feature importance
+                self._run_feature_importance_analysis()
+                
+            self.logger.info(f"Analysis ({analysis_type}) completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Analysis failed: {str(e)}")
+            messagebox.showerror("Error", f"Analysis failed: {str(e)}")
+
+    def _run_statistical_analysis(self):
+        """Perform statistical analysis between clusters"""
+        try:
+            test_type = self.stat_test.get()
+            results = []
+            
+            for column in self.normalized_data.columns:
+                if test_type == "anova":
+                    # Group data by clusters
+                    groups = [
+                        self.normalized_data[column][self.cluster_labels == label]
+                        for label in np.unique(self.cluster_labels)
+                    ]
+                    stat, pval = f_oneway(*groups)
+                    test_name = "ANOVA"
+                    
+                elif test_type == "chi2":
+                    # Create contingency table
+                    contingency = pd.crosstab(
+                        self.cluster_labels,
+                        self.normalized_data[column].astype('category')
+                    )
+                    stat, pval, _, _ = chi2_contingency(contingency)
+                    test_name = "Chi-square"
+                    
+                else:  # t-test
+                    # Compare each pair of clusters
+                    pairs = []
+                    for i in range(len(np.unique(self.cluster_labels))):
+                        for j in range(i + 1, len(np.unique(self.cluster_labels))):
+                            group1 = self.normalized_data[column][self.cluster_labels == i]
+                            group2 = self.normalized_data[column][self.cluster_labels == j]
+                            stat, pval = ttest_ind(group1, group2)
+                            pairs.append((f"Cluster {i} vs {j}", stat, pval))
+                    test_name = "T-test"
+                
+                results.append({
+                    'Feature': column,
+                    'Test': test_name,
+                    'Statistic': stat,
+                    'P-value': pval
+                })
+            
+            # Create results DataFrame
+            results_df = pd.DataFrame(results)
+            
+            # Apply multiple testing correction
+            results_df['Adjusted P-value'] = multipletests(
+                results_df['P-value'],
+                method='fdr_bh'
+            )[1]
+            
+            # Store results
+            self.analysis_results = {
+                'type': 'statistical',
+                'test': test_type,
+                'results': results_df
+            }
+            
+            # Display results
+            self._display_analysis_results()
+            
+        except Exception as e:
+            self.logger.error(f"Statistical analysis failed: {str(e)}")
+            raise
+
+    def _run_stability_analysis(self):
+        """Assess clustering stability through resampling"""
+        try:
+            n_iterations = self.n_iterations.get()
+            subsample_size = self.subsample_size.get() / 100  # Convert percentage to proportion
+            
+            stability_scores = []
+            
+            for _ in tqdm.trange(n_iterations, desc="Assessing stability"):
+                # Subsample data
+                n_samples = int(len(self.normalized_data) * subsample_size)
+                indices = np.random.choice(
+                    len(self.normalized_data),
+                    size=n_samples,
+                    replace=False
+                )
+                subsample = self.normalized_data.iloc[indices]
+                
+                # Perform clustering on subsample
+                if self.cluster_method.get() == "kmeans":
+                    clusterer = KMeans(
+                        n_clusters=self.n_clusters.get(),
+                        random_state=self.random_state
+                    )
+                elif self.cluster_method.get() == "dbscan":
+                    clusterer = DBSCAN(
+                        eps=self.eps.get(),
+                        min_samples=self.min_samples.get()
+                    )
+                else:  # hierarchical
+                    clusterer = AgglomerativeClustering(
+                        n_clusters=self.n_clusters_hierarchical.get(),
+                        linkage=self.linkage.get()
+                    )
+                
+                subsample_labels = clusterer.fit_predict(subsample)
+                
+                # Calculate stability metrics
+                if -1 not in subsample_labels:  # Skip if DBSCAN found noise points
+                    stability_scores.append({
+                        'silhouette': silhouette_score(subsample, subsample_labels),
+                        'calinski': calinski_harabasz_score(subsample, subsample_labels),
+                        'davies_bouldin': davies_bouldin_score(subsample, subsample_labels)
+                    })
+            
+            # Calculate stability statistics
+            stability_df = pd.DataFrame(stability_scores)
+            stability_stats = pd.DataFrame({
+                'Metric': stability_df.columns,
+                'Mean': stability_df.mean(),
+                'Std': stability_df.std(),
+                'CV': stability_df.std() / stability_df.mean() * 100  # Coefficient of variation
+            })
+            
+            # Store results
+            self.analysis_results = {
+                'type': 'stability',
+                'iterations': n_iterations,
+                'subsample_size': subsample_size,
+                'results': stability_stats,
+                'raw_scores': stability_df
+            }
+            
+            # Display results
+            self._display_analysis_results()
+            
+        except Exception as e:
+            self.logger.error(f"Stability analysis failed: {str(e)}")
+            raise
+
+    def _run_feature_importance_analysis(self):
+        """Analyze feature importance for clustering results"""
+        try:
+            method = self.importance_method.get()
+            n_features = self.n_top_features.get()
+            
+            if method == "random_forest":
+                clf = RandomForestClassifier(
+                    n_estimators=100,
+                    random_state=self.random_state
+                )
+                clf.fit(self.normalized_data, self.cluster_labels)
+                importances = clf.feature_importances_
+                
+            elif method == "mutual_info":
+                from sklearn.feature_selection import mutual_info_classif
+                importances = mutual_info_classif(
+                    self.normalized_data,
+                    self.cluster_labels,
+                    random_state=self.random_state
+                )
+                
+            else:  # chi2
+                from sklearn.feature_selection import chi2
+                importances, pvalues = chi2(
+                    self.normalized_data,
+                    self.cluster_labels
+                )
+            
+            # Create importance DataFrame
+            importance_df = pd.DataFrame({
+                'Feature': self.normalized_data.columns,
+                'Importance': importances
+            })
+            
+            # Sort and select top features
+            importance_df = importance_df.sort_values(
+                'Importance',
+                ascending=False
+            ).head(n_features)
+            
+            # Store results
+            self.analysis_results = {
+                'type': 'feature_importance',
+                'method': method,
+                'results': importance_df
+            }
+            
+            # Display results
+            self._display_analysis_results()
+            
+        except Exception as e:
+            self.logger.error(f"Feature importance analysis failed: {str(e)}")
+            raise
+
+    def _display_analysis_results(self):
+        """Display analysis results in the GUI"""
+        try:
+            if not hasattr(self, 'analysis_results'):
+                raise ValueError("No analysis results available")
+                
+            # Clear previous results
+            for widget in self.results_frame.winfo_children():
+                widget.destroy()
+                
+            results = self.analysis_results
+            
+            if results['type'] == 'statistical':
+                self._display_statistical_results()
+            elif results['type'] == 'stability':
+                self._display_stability_results()
+            else:  # feature importance
+                self._display_importance_results()
+                
+        except Exception as e:
+            self.logger.error(f"Failed to display analysis results: {str(e)}")
+            raise
+
+    def _display_statistical_results(self):
+        """Display statistical analysis results in the GUI"""
+        try:
+            results_df = self.analysis_results['results']
+            test_type = self.analysis_results['test']
+            
+            # Create text widget for results
+            results_text = tk.Text(
+                self.results_frame,
+                wrap=tk.WORD,
+                height=20,
+                width=60
+            )
+            results_text.pack(fill=tk.BOTH, expand=True)
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(
+                self.results_frame,
+                orient=tk.VERTICAL,
+                command=results_text.yview
+            )
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            results_text.configure(yscrollcommand=scrollbar.set)
+            
+            # Format and display results
+            results_text.insert(tk.END, f"Statistical Analysis Results ({test_type})\n\n")
+            results_text.insert(tk.END, results_df.to_string())
+            
+            # Make text widget read-only
+            results_text.configure(state='disabled')
+            
+        except Exception as e:
+            self.logger.error(f"Failed to display statistical results: {str(e)}")
+            raise
+
+    def _display_stability_results(self):
+        """Display stability analysis results in the GUI"""
+        try:
+            stability_stats = self.analysis_results['results']
+            raw_scores = self.analysis_results['raw_scores']
+            
+            # Create text widget for results
+            results_text = tk.Text(
+                self.results_frame,
+                wrap=tk.WORD,
+                height=20,
+                width=60
+            )
+            results_text.pack(fill=tk.BOTH, expand=True)
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(
+                self.results_frame,
+                orient=tk.VERTICAL,
+                command=results_text.yview
+            )
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            results_text.configure(yscrollcommand=scrollbar.set)
+            
+            # Format and display results
+            results_text.insert(tk.END, "Stability Analysis Results\n\n")
+            results_text.insert(tk.END, f"Number of iterations: {self.analysis_results['iterations']}\n")
+            results_text.insert(tk.END, f"Subsample size: {self.analysis_results['subsample_size']*100}%\n\n")
+            results_text.insert(tk.END, "Stability Statistics:\n")
+            results_text.insert(tk.END, stability_stats.to_string())
+            
+            # Make text widget read-only
+            results_text.configure(state='disabled')
+            
+            # Create stability plot
+            fig = Figure(figsize=(8, 4))
+            ax = fig.add_subplot(111)
+            raw_scores.boxplot(ax=ax)
+            ax.set_title('Stability Metrics Distribution')
+            ax.set_ylabel('Score')
+            
+            # Add plot to GUI
+            canvas = FigureCanvasTkAgg(fig, master=self.results_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to display stability results: {str(e)}")
+            raise
+
+    def _display_importance_results(self):
+        """Display feature importance analysis results in the GUI"""
+        try:
+            importance_df = self.analysis_results['results']
+            method = self.analysis_results['method']
+            
+            # Create text widget for results
+            results_text = tk.Text(
+                self.results_frame,
+                wrap=tk.WORD,
+                height=20,
+                width=60
+            )
+            results_text.pack(fill=tk.BOTH, expand=True)
+            
+            # Add scrollbar
+            scrollbar = ttk.Scrollbar(
+                self.results_frame,
+                orient=tk.VERTICAL,
+                command=results_text.yview
+            )
+            scrollbar.pack(side=tk.RIGHT, fill=tk.Y)
+            results_text.configure(yscrollcommand=scrollbar.set)
+            
+            # Format and display results
+            results_text.insert(tk.END, f"Feature Importance Analysis Results ({method})\n\n")
+            results_text.insert(tk.END, importance_df.to_string())
+            
+            # Make text widget read-only
+            results_text.configure(state='disabled')
+            
+            # Create importance plot
+            fig = Figure(figsize=(8, 6))
+            ax = fig.add_subplot(111)
+            importance_df.plot(
+                kind='barh',
+                x='Feature',
+                y='Importance',
+                ax=ax
+            )
+            ax.set_title('Feature Importance')
+            
+            # Add plot to GUI
+            canvas = FigureCanvasTkAgg(fig, master=self.results_frame)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to display importance results: {str(e)}")
+            raise
+
+    def export_analysis(self):
+        """Export analysis results to file"""
+        try:
+            if not hasattr(self, 'analysis_results'):
+                raise ValueError("No analysis results available")
+                
+            # Open file dialog for saving
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[
+                    ("CSV files", "*.csv"),
+                    ("Excel files", "*.xlsx"),
+                    ("JSON files", "*.json"),
+                    ("All files", "*.*")
+                ],
+                title="Export Analysis Results"
+            )
+            
+            if file_path:
+                results = self.analysis_results
+                
+                # Export based on file type
+                if file_path.endswith('.csv'):
+                    results['results'].to_csv(file_path, index=False)
+                elif file_path.endswith('.xlsx'):
+                    with pd.ExcelWriter(file_path) as writer:
+                        results['results'].to_excel(writer, sheet_name='Results', index=False)
+                        if 'raw_scores' in results:
+                            results['raw_scores'].to_excel(writer, sheet_name='Raw Scores', index=False)
+                else:  # JSON
+                    # Convert DataFrame to dict for JSON serialization
+                    export_dict = {
+                        'type': results['type'],
+                        'results': results['results'].to_dict(orient='records')
+                    }
+                    if 'raw_scores' in results:
+                        export_dict['raw_scores'] = results['raw_scores'].to_dict(orient='records')
+                    
+                    with open(file_path, 'w') as f:
+                        json.dump(export_dict, f, indent=4)
+                    
+                self.logger.info(f"Analysis results exported to {file_path}")
+                self.status_var.set(f"Results exported to {file_path}")
+                messagebox.showinfo("Success", f"Results exported to {file_path}")
+                
+        except Exception as e:
+            self.logger.error(f"Failed to export analysis results: {str(e)}")
+            messagebox.showerror("Error", f"Failed to export results: {str(e)}")
 
 def main():
     """Main entry point for the clustering GUI application"""
