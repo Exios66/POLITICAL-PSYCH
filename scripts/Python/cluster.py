@@ -122,13 +122,6 @@ class ClusterAnalysisGUI:
             # Setup directories
             self._setup_directories()
 
-            # Initialize data variables
-            self.cleaned_data = None
-            self.normalized_data = None
-            self.cluster_labels = None
-            self.current_plot = None
-            self.random_state = 42
-
             # Configure window minimum size
             self.root.minsize(800, 600)
 
@@ -140,16 +133,8 @@ class ClusterAnalysisGUI:
             self.notebook = ttk.Notebook(self.root)
             self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
 
-            # Create frames for each tab
-            self.data_tab = ttk.Frame(self.notebook)
-            self.cluster_tab = ttk.Frame(self.notebook)
-            self.viz_tab = ttk.Frame(self.notebook)
-            self.analysis_tab = ttk.Frame(self.notebook)
-            self.factor_tab = ttk.Frame(self.notebook)
-
-            # Initialize cluster frame
-            self.cluster_frame = ttk.LabelFrame(self.cluster_tab, text="Clustering Options")
-            self.cluster_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            # Initialize all frames
+            self._initialize_frames()
 
             # Add tabs to notebook
             self.notebook.add(self.data_tab, text="Data Processing")
@@ -234,10 +219,13 @@ class ClusterAnalysisGUI:
             self.n_init = tk.IntVar(value=10)
             self.linkage = tk.StringVar(value="ward")
             self.n_clusters_hierarchical = tk.IntVar(value=3)
+            self.auto_tune = tk.BooleanVar(value=False)  # Added auto_tune variable
 
             # Analysis variables
             self.analysis_type = tk.StringVar(value="statistical")
             self.stat_test = tk.StringVar(value="anova")
+            self.importance_method = tk.StringVar(value="random_forest")
+            self.n_top_features = tk.IntVar(value=10)
             self.n_iterations = tk.IntVar(value=100)
             self.subsample_size = tk.IntVar(value=80)
 
@@ -248,8 +236,6 @@ class ClusterAnalysisGUI:
             self.profile_type = tk.StringVar(value="heatmap")
             self.reduction_method = tk.StringVar(value="pca")
             self.n_components = tk.IntVar(value=2)
-            self.importance_method = tk.StringVar(value="random_forest")
-            self.n_top_features = tk.IntVar(value=10)
 
             # Factor analysis variables
             self.n_factors = tk.IntVar(value=3)
@@ -265,6 +251,12 @@ class ClusterAnalysisGUI:
             # Status variables
             self.status_var = tk.StringVar(value="Ready")
             self.progress_var = tk.DoubleVar(value=0)
+
+            # UI state variables
+            self.show_advanced_options = tk.BooleanVar(value=False)
+            self.show_tooltips = tk.BooleanVar(value=True)
+            self.auto_update_plots = tk.BooleanVar(value=True)
+            self.dark_mode = tk.BooleanVar(value=False)
 
             logger.info("GUI variables initialized successfully")
 
@@ -600,110 +592,118 @@ class ClusterAnalysisGUI:
     def create_data_tab(self):
         """Create and configure data processing tab"""
         try:
+            # Main container frame
+            data_container = ttk.Frame(self.data_tab)
+            data_container.pack(fill=tk.BOTH, expand=True)
+
+            # Left panel for controls
+            control_panel = ttk.LabelFrame(data_container, text="Data Processing Controls")
+            control_panel.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+
             # File selection frame
-            file_frame = ttk.LabelFrame(self.data_tab, text="Data File")
+            file_frame = ttk.LabelFrame(control_panel, text="Data File")
             file_frame.pack(fill=tk.X, padx=5, pady=5)
-            
+
             ttk.Entry(
                 file_frame,
                 textvariable=self.file_path,
-                width=60
+                width=40
             ).pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5)
-            
+
             ttk.Button(
                 file_frame,
                 text="Browse",
                 command=self.browse_file
             ).pack(side=tk.LEFT, padx=5)
-            
-            # Data processing options frame
-            options_frame = ttk.LabelFrame(self.data_tab, text="Processing Options")
+
+            # Processing options frame
+            options_frame = ttk.LabelFrame(control_panel, text="Processing Options")
             options_frame.pack(fill=tk.X, padx=5, pady=5)
-            
+
             # Missing values
             missing_frame = ttk.Frame(options_frame)
             missing_frame.pack(fill=tk.X, padx=5, pady=2)
-            
+
             ttk.Checkbutton(
                 missing_frame,
                 text="Handle Missing Values",
                 variable=self.handle_missing
             ).pack(side=tk.LEFT)
-            
+
             ttk.OptionMenu(
                 missing_frame,
                 self.missing_method,
                 "median",
                 "median", "mean", "mode", "drop"
             ).pack(side=tk.LEFT, padx=5)
-            
+
             # Outliers
             outlier_frame = ttk.Frame(options_frame)
             outlier_frame.pack(fill=tk.X, padx=5, pady=2)
-            
+
             ttk.Checkbutton(
                 outlier_frame,
                 text="Remove Outliers",
                 variable=self.remove_outliers
             ).pack(side=tk.LEFT)
-            
+
             ttk.OptionMenu(
                 outlier_frame,
                 self.outlier_method,
                 "iqr",
                 "iqr", "zscore", "isolation_forest"
             ).pack(side=tk.LEFT, padx=5)
-            
+
             # Normalization
             norm_frame = ttk.Frame(options_frame)
             norm_frame.pack(fill=tk.X, padx=5, pady=2)
-            
+
             ttk.Checkbutton(
                 norm_frame,
                 text="Normalize Features",
                 variable=self.normalize
             ).pack(side=tk.LEFT)
-            
+
             ttk.OptionMenu(
                 norm_frame,
                 self.norm_method,
                 "standard",
                 "standard", "minmax", "robust"
             ).pack(side=tk.LEFT, padx=5)
-            
+
             # Process button
             ttk.Button(
-                options_frame,
+                control_panel,
                 text="Process Data",
                 command=self.process_data
             ).pack(pady=5)
-            
-            # Preview frame
-            preview_frame = ttk.LabelFrame(self.data_tab, text="Data Preview")
-            preview_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
+
+            # Right panel for data preview
+            preview_panel = ttk.LabelFrame(data_container, text="Data Preview")
+            preview_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
             # Add scrollbars
-            preview_scroll_y = ttk.Scrollbar(preview_frame)
+            preview_scroll_y = ttk.Scrollbar(preview_panel)
             preview_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-            
-            preview_scroll_x = ttk.Scrollbar(preview_frame, orient=tk.HORIZONTAL)
+
+            preview_scroll_x = ttk.Scrollbar(preview_panel, orient=tk.HORIZONTAL)
             preview_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-            
+
             # Create text widget
             self.preview_text = tk.Text(
-                preview_frame,
+                preview_panel,
                 wrap=tk.NONE,
                 xscrollcommand=preview_scroll_x.set,
                 yscrollcommand=preview_scroll_y.set
             )
             self.preview_text.pack(fill=tk.BOTH, expand=True)
-            
+
             # Configure scrollbars
             preview_scroll_y.config(command=self.preview_text.yview)
             preview_scroll_x.config(command=self.preview_text.xview)
-            
+
             self.logger.info("Data tab created successfully")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to create data tab: {str(e)}")
             raise
@@ -711,86 +711,112 @@ class ClusterAnalysisGUI:
     def create_cluster_tab(self):
         """Create and configure clustering tab"""
         try:
-            # Method selection frame
-            method_frame = ttk.LabelFrame(self.cluster_frame, text="Clustering Method")
+            # Main container frame
+            cluster_container = ttk.Frame(self.cluster_tab)
+            cluster_container.pack(fill=tk.BOTH, expand=True)
+
+            # Left panel for controls
+            control_panel = ttk.LabelFrame(cluster_container, text="Clustering Controls")
+            control_panel.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+
+            # Method selection
+            method_frame = ttk.LabelFrame(control_panel, text="Clustering Method")
             method_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            ttk.Label(method_frame, text="Method:").pack(side=tk.LEFT, padx=5)
-            ttk.OptionMenu(
-                method_frame,
-                self.cluster_method,
-                "kmeans",
-                "kmeans", "dbscan", "hierarchical",
-                command=self.update_cluster_options
-            ).pack(side=tk.LEFT, padx=5)
-            
-            # Parameters frame - will be populated by update_cluster_options
-            self.params_frame = ttk.LabelFrame(self.cluster_frame, text="Parameters")
+
+            methods = [
+                ("K-means", "kmeans"),
+                ("DBSCAN", "dbscan"),
+                ("Hierarchical", "hierarchical"),
+                ("Gaussian Mixture", "gmm")
+            ]
+
+            for text, value in methods:
+                ttk.Radiobutton(
+                    method_frame,
+                    text=text,
+                    variable=self.cluster_method,
+                    value=value,
+                    command=self.update_cluster_options
+                ).pack(anchor=tk.W, padx=5, pady=2)
+
+            # Parameters frame
+            self.params_frame = ttk.LabelFrame(control_panel, text="Parameters")
             self.params_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            # Results frame
-            results_frame = ttk.LabelFrame(self.cluster_frame, text="Results")
-            results_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-            # Add scrollbars
-            results_scroll_y = ttk.Scrollbar(results_frame)
-            results_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-            
-            results_scroll_x = ttk.Scrollbar(results_frame, orient=tk.HORIZONTAL)
-            results_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Results text widget
-            self.results_text = tk.Text(
-                results_frame,
-                wrap=tk.NONE,
-                xscrollcommand=results_scroll_x.set,
-                yscrollcommand=results_scroll_y.set
-            )
-            self.results_text.pack(fill=tk.BOTH, expand=True)
-            
-            # Configure scrollbars
-            results_scroll_y.config(command=self.results_text.yview)
-            results_scroll_x.config(command=self.results_text.xview)
-            
+
+            # Advanced options frame
+            advanced_frame = ttk.LabelFrame(control_panel, text="Advanced Options")
+            advanced_frame.pack(fill=tk.X, padx=5, pady=5)
+
+            ttk.Checkbutton(
+                advanced_frame,
+                text="Auto-tune parameters",
+                variable=self.auto_tune
+            ).pack(anchor=tk.W, padx=5, pady=2)
+
             # Control buttons
-            button_frame = ttk.Frame(self.cluster_frame)
+            button_frame = ttk.Frame(control_panel)
             button_frame.pack(fill=tk.X, padx=5, pady=5)
-            
+
             ttk.Button(
                 button_frame,
                 text="Run Clustering",
                 command=self.perform_clustering
             ).pack(side=tk.LEFT, padx=5)
-            
+
             ttk.Button(
                 button_frame,
                 text="Save Results",
                 command=self.save_clustering_results
             ).pack(side=tk.LEFT, padx=5)
-            
-            # Initialize clustering method variable
-            self.cluster_method_var = tk.StringVar(value="kmeans")
-            
-            self.logger.info("Cluster tab created successfully")
-            
+
+            # Right panel for results display
+            results_panel = ttk.LabelFrame(cluster_container, text="Results")
+            results_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+            # Add tabs for different result views
+            results_notebook = ttk.Notebook(results_panel)
+            results_notebook.pack(fill=tk.BOTH, expand=True)
+
+            # Summary tab
+            summary_frame = ttk.Frame(results_notebook)
+            results_notebook.add(summary_frame, text="Summary")
+
+            # Metrics tab
+            metrics_frame = ttk.Frame(results_notebook)
+            results_notebook.add(metrics_frame, text="Metrics")
+
+            # Visualization tab
+            viz_frame = ttk.Frame(results_notebook)
+            results_notebook.add(viz_frame, text="Visualization")
+
+            self.logger.info("Clustering tab created successfully")
+
         except Exception as e:
-            self.logger.error(f"Failed to create cluster tab: {str(e)}")
+            self.logger.error(f"Failed to create clustering tab: {str(e)}")
             raise
 
     def create_viz_tab(self):
         """Create and configure visualization tab"""
         try:
-            # Plot type selection frame
-            type_frame = ttk.LabelFrame(self.viz_tab, text="Visualization Type")
+            # Main container frame
+            viz_container = ttk.Frame(self.viz_tab)
+            viz_container.pack(fill=tk.BOTH, expand=True)
+
+            # Left panel for controls
+            control_panel = ttk.LabelFrame(viz_container, text="Visualization Controls")
+            control_panel.pack(side=tk.LEFT, fill=tk.Y, padx=5, pady=5)
+
+            # Plot type selection
+            type_frame = ttk.LabelFrame(control_panel, text="Plot Type")
             type_frame.pack(fill=tk.X, padx=5, pady=5)
-            
+
             plot_types = [
                 ("Distribution", "distribution"),
                 ("Cluster Profiles", "profile"),
                 ("Dimensionality Reduction", "reduction"),
                 ("Feature Importance", "importance")
             ]
-            
+
             for text, value in plot_types:
                 ttk.Radiobutton(
                     type_frame,
@@ -798,44 +824,61 @@ class ClusterAnalysisGUI:
                     variable=self.plot_type,
                     value=value,
                     command=self.update_plot_options
-                ).pack(side=tk.LEFT, padx=5)
-            
-            # Options frame - will be populated by update_plot_options
-            self.plot_options_frame = ttk.LabelFrame(self.viz_tab, text="Plot Options")
+                ).pack(anchor=tk.W, padx=5, pady=2)
+
+            # Options frame
+            self.plot_options_frame = ttk.LabelFrame(control_panel, text="Plot Options")
             self.plot_options_frame.pack(fill=tk.X, padx=5, pady=5)
-            
-            # Plot frame
-            plot_frame = ttk.LabelFrame(self.viz_tab, text="Plot")
-            plot_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-            # Initialize matplotlib figure
-            self.fig = Figure(figsize=(8, 6))
-            self.canvas = FigureCanvasTkAgg(self.fig, master=plot_frame)
-            self.canvas.draw()
-            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
-            
-            # Add toolbar
-            toolbar = NavigationToolbar2Tk(self.canvas, plot_frame)
-            toolbar.update()
-            
+
+            # Feature selection listbox
+            features_frame = ttk.LabelFrame(control_panel, text="Features")
+            features_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+            # Add scrollbar to feature listbox
+            feature_scroll = ttk.Scrollbar(features_frame)
+            feature_scroll.pack(side=tk.RIGHT, fill=tk.Y)
+
+            self.feature_listbox = tk.Listbox(
+                features_frame,
+                selectmode=tk.MULTIPLE,
+                exportselection=False,
+                yscrollcommand=feature_scroll.set
+            )
+            self.feature_listbox.pack(fill=tk.BOTH, expand=True)
+            feature_scroll.config(command=self.feature_listbox.yview)
+
             # Control buttons
-            button_frame = ttk.Frame(self.viz_tab)
+            button_frame = ttk.Frame(control_panel)
             button_frame.pack(fill=tk.X, padx=5, pady=5)
-            
+
             ttk.Button(
                 button_frame,
                 text="Generate Plot",
                 command=self.generate_plot
             ).pack(side=tk.LEFT, padx=5)
-            
+
             ttk.Button(
                 button_frame,
                 text="Save Plot",
                 command=self.save_plot
             ).pack(side=tk.LEFT, padx=5)
-            
+
+            # Right panel for plot display
+            plot_panel = ttk.LabelFrame(viz_container, text="Plot")
+            plot_panel.pack(side=tk.RIGHT, fill=tk.BOTH, expand=True, padx=5, pady=5)
+
+            # Initialize matplotlib figure
+            self.fig = Figure(figsize=(8, 6))
+            self.canvas = FigureCanvasTkAgg(self.fig, master=plot_panel)
+            self.canvas.draw()
+            self.canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+
+            # Add toolbar
+            toolbar = NavigationToolbar2Tk(self.canvas, plot_panel)
+            toolbar.update()
+
             self.logger.info("Visualization tab created successfully")
-            
+
         except Exception as e:
             self.logger.error(f"Failed to create visualization tab: {str(e)}")
             raise
@@ -862,34 +905,13 @@ class ClusterAnalysisGUI:
                     command=self.update_analysis_options
                 ).pack(side=tk.LEFT, padx=5)
             
-            # Options frame - will be populated by update_analysis_options
+            # Options frame
             self.analysis_options_frame = ttk.LabelFrame(self.analysis_tab, text="Analysis Options")
             self.analysis_options_frame.pack(fill=tk.X, padx=5, pady=5)
             
             # Results frame
-            results_frame = ttk.LabelFrame(self.analysis_tab, text="Analysis Results")
-            results_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
-            
-            # Add scrollbars
-            results_scroll_y = ttk.Scrollbar(results_frame)
-            results_scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
-            
-            results_scroll_x = ttk.Scrollbar(results_frame, orient=tk.HORIZONTAL)
-            results_scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
-            
-            # Results text widget
-            self.analysis_text = tk.Text(
-                results_frame,
-                wrap=tk.NONE,
-                xscrollcommand=results_scroll_x.set,
-                yscrollcommand=results_scroll_y.set
-            )
-            self.analysis_text.pack(fill=tk.BOTH, expand=True)
-            
-                        
-            # Configure scrollbars
-            results_scroll_y.config(command=self.analysis_text.yview)
-            results_scroll_x.config(command=self.analysis_text.xview)
+            self.results_frame = ttk.LabelFrame(self.analysis_tab, text="Analysis Results")
+            self.results_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
             
             # Control buttons
             button_frame = ttk.Frame(self.analysis_tab)
@@ -1159,6 +1181,17 @@ class ClusterAnalysisGUI:
                 "random_forest", "mutual_info", "chi2"
             ).pack(side=tk.LEFT, padx=5)
             
+            # Number of features
+            n_features_frame = ttk.Frame(self.analysis_options_frame)
+            n_features_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(n_features_frame, text="Top features:").pack(side=tk.LEFT)
+            ttk.Entry(
+                n_features_frame,
+                textvariable=self.n_top_features,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
         except Exception as e:
             self.logger.error(f"Failed to create importance analysis options: {str(e)}")
             raise
@@ -1220,8 +1253,11 @@ class ClusterAnalysisGUI:
                     n_clusters=self.n_clusters_hierarchical.get(),
                     linkage=self.linkage.get()
                 )
-            else:
-                self.normalized_data = self.cleaned_data.copy()
+            else:  # gmm
+                clusterer = GaussianMixture(
+                    n_components=self.gmm_n_components.get(),
+                    covariance_type=self.gmm_covariance_type.get()
+                )
 
             self.progress_var.set(100)
             self.status_var.set("Data processing complete")
@@ -1292,6 +1328,9 @@ class ClusterAnalysisGUI:
             elif method == "hierarchical":
                 self.create_hierarchical_frame()
                 self.hierarchical_frame.pack(fill=tk.X, padx=5, pady=5)
+            elif method == "gmm":
+                self.create_gmm_frame()
+                self.gmm_frame.pack(fill=tk.X, padx=5, pady=5)
                 
             self.logger.info(f"Updated clustering options for method: {method}")
             
@@ -1437,6 +1476,44 @@ class ClusterAnalysisGUI:
             
         except Exception as e:
             self.logger.error(f"Failed to create hierarchical frame: {str(e)}")
+            raise
+
+    def create_gmm_frame(self):
+        """Create frame for Gaussian Mixture Model clustering options"""
+        try:
+            if not hasattr(self, 'gmm_frame'):
+                self.gmm_frame = ttk.LabelFrame(self.cluster_frame, text="Gaussian Mixture Model Parameters")
+            
+            # Clear existing widgets
+            for widget in self.gmm_frame.winfo_children():
+                widget.destroy()
+            
+            # Number of components
+            components_frame = ttk.Frame(self.gmm_frame)
+            components_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(components_frame, text="Number of components:").pack(side=tk.LEFT)
+            ttk.Entry(
+                components_frame,
+                textvariable=self.gmm_n_components,
+                width=5
+            ).pack(side=tk.LEFT, padx=5)
+            
+            # Covariance type
+            covariance_frame = ttk.Frame(self.gmm_frame)
+            covariance_frame.pack(fill=tk.X, padx=5, pady=2)
+            
+            ttk.Label(covariance_frame, text="Covariance type:").pack(side=tk.LEFT)
+            ttk.OptionMenu(
+                covariance_frame,
+                self.gmm_covariance_type,
+                "full", "spherical", "diag", "tied"
+            ).pack(side=tk.LEFT, padx=5)
+            
+            self.logger.info("Created Gaussian Mixture Model parameter frame")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create Gaussian Mixture Model frame: {str(e)}")
             raise
 
     def save_clustering_results(self):
@@ -2002,10 +2079,15 @@ class ClusterAnalysisGUI:
                         eps=self.eps.get(),
                         min_samples=self.min_samples.get()
                     )
-                else:  # hierarchical
+                elif self.cluster_method.get() == "hierarchical":
                     clusterer = AgglomerativeClustering(
                         n_clusters=self.n_clusters_hierarchical.get(),
                         linkage=self.linkage.get()
+                    )
+                else:  # gmm
+                    clusterer = GaussianMixture(
+                        n_components=self.gmm_n_components.get(),
+                        covariance_type=self.gmm_covariance_type.get()
                     )
                 
                 subsample_labels = clusterer.fit_predict(subsample)
@@ -2305,6 +2387,178 @@ class ClusterAnalysisGUI:
         except Exception as e:
             self.logger.error(f"Failed to export analysis results: {str(e)}")
             messagebox.showerror("Error", f"Failed to export results: {str(e)}")
+
+    def save_factor_analysis_results(self):
+        """Save factor analysis results to file"""
+        try:
+            if not hasattr(self, 'factor_results'):
+                raise ValueError("No factor analysis results available")
+                
+            # Create results directory with timestamp
+            timestamp = datetime.now().strftime('%Y%m%d_%H%M%S')
+            results_dir = self.results_dir / f"factor_analysis_{timestamp}"
+            results_dir.mkdir(parents=True, exist_ok=True)
+            
+            # Save loadings
+            loadings_file = results_dir / 'factor_loadings.csv'
+            self.factor_results['loadings'].to_csv(loadings_file)
+            
+            # Save variance explained
+            variance_file = results_dir / 'variance_explained.csv'
+            self.factor_results['variance'].to_csv(variance_file)
+            
+            # Save visualization if it exists
+            if hasattr(self, 'factor_plot_widget'):
+                plot_file = results_dir / 'factor_analysis_plot.html'
+                self.factor_plot_widget.write_html(str(plot_file))
+                
+            # Generate detailed report
+            report = [
+                "# Factor Analysis Report",
+                f"\nDate: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}",
+                "\n## Parameters:",
+                f"Number of factors: {self.n_factors.get()}",
+                f"Rotation method: {self.rotation_method.get()}",
+                f"Loading threshold: {self.factor_threshold.get()}",
+                "\n## Results:",
+                "\n### Factor Loadings:",
+                self.factor_results['loadings'].to_string(),
+                "\n### Variance Explained:",
+                self.factor_results['variance'].to_string()
+            ]
+            
+            report_file = results_dir / 'factor_analysis_report.md'
+            with open(report_file, 'w') as f:
+                f.write('\n'.join(report))
+                
+            # Save model if possible
+            if 'model' in self.factor_results:
+                model_file = results_dir / 'factor_model.joblib'
+                joblib.dump(self.factor_results['model'], model_file)
+                
+            self.logger.info(f"Factor analysis results saved to {results_dir}")
+            self.status_var.set(f"Results saved to {results_dir}")
+            messagebox.showinfo("Success", f"Factor analysis results saved to {results_dir}")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to save factor analysis results: {str(e)}")
+            messagebox.showerror("Error", f"Failed to save results: {str(e)}")
+
+    def _create_status_bars(self):
+        """Create status and progress bars at the bottom of the GUI"""
+        try:
+            # Create status bar frame
+            self.status_frame = ttk.Frame(self.root)
+            self.status_frame.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            # Status label
+            self.status_label = ttk.Label(
+                self.status_frame,
+                textvariable=self.status_var,
+                relief=tk.SUNKEN,
+                anchor=tk.W
+            )
+            self.status_label.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=5, pady=2)
+            
+            # Progress bar
+            self.progress_bar = ttk.Progressbar(
+                self.status_frame,
+                mode='determinate',
+                variable=self.progress_var,
+                length=200
+            )
+            self.progress_bar.pack(side=tk.RIGHT, padx=5, pady=2)
+            
+            self.logger.info("Status bars created successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to create status bars: {str(e)}")
+            raise
+
+    def _initialize_frames(self):
+        """Initialize all frames that will be referenced later"""
+        try:
+            logger.info("Initializing GUI frames")
+
+            # Create main tab frames
+            self.data_tab = ttk.Frame(self.notebook)
+            self.cluster_tab = ttk.Frame(self.notebook)
+            self.viz_tab = ttk.Frame(self.notebook)
+            self.analysis_tab = ttk.Frame(self.notebook)
+            self.factor_tab = ttk.Frame(self.notebook)
+
+            # Initialize data processing frames
+            self.data_container = ttk.Frame(self.data_tab)
+            self.data_control_panel = ttk.LabelFrame(self.data_container, text="Data Processing Controls")
+            self.data_preview_panel = ttk.LabelFrame(self.data_container, text="Data Preview")
+            self.file_frame = ttk.LabelFrame(self.data_control_panel, text="Data File")
+            self.processing_options_frame = ttk.LabelFrame(self.data_control_panel, text="Processing Options")
+
+            # Initialize clustering frames
+            self.cluster_container = ttk.Frame(self.cluster_tab)
+            self.cluster_control_panel = ttk.LabelFrame(self.cluster_container, text="Clustering Controls")
+            self.cluster_results_panel = ttk.LabelFrame(self.cluster_container, text="Results")
+            self.cluster_frame = ttk.LabelFrame(self.cluster_control_panel, text="Clustering Options")
+            
+            # Method-specific clustering frames
+            self.kmeans_frame = ttk.LabelFrame(self.cluster_frame, text="K-means Parameters")
+            self.dbscan_frame = ttk.LabelFrame(self.cluster_frame, text="DBSCAN Parameters")
+            self.hierarchical_frame = ttk.LabelFrame(self.cluster_frame, text="Hierarchical Parameters")
+            self.gmm_frame = ttk.LabelFrame(self.cluster_frame, text="GMM Parameters")
+            self.params_frame = ttk.LabelFrame(self.cluster_frame, text="Parameters")
+
+            # Initialize visualization frames
+            self.viz_container = ttk.Frame(self.viz_tab)
+            self.viz_control_panel = ttk.LabelFrame(self.viz_container, text="Visualization Controls")
+            self.viz_display_panel = ttk.LabelFrame(self.viz_container, text="Plot Display")
+            self.plot_options_frame = ttk.LabelFrame(self.viz_control_panel, text="Plot Options")
+            self.features_frame = ttk.LabelFrame(self.viz_control_panel, text="Features")
+
+            # Initialize analysis frames
+            self.analysis_container = ttk.Frame(self.analysis_tab)
+            self.analysis_control_panel = ttk.LabelFrame(self.analysis_container, text="Analysis Controls")
+            self.analysis_results_panel = ttk.LabelFrame(self.analysis_container, text="Results")
+            self.analysis_type_frame = ttk.LabelFrame(self.analysis_control_panel, text="Analysis Type")
+            self.analysis_options_frame = ttk.LabelFrame(self.analysis_control_panel, text="Analysis Options")
+            self.results_frame = ttk.LabelFrame(self.analysis_results_panel, text="Analysis Results")
+
+            # Initialize factor analysis frames
+            self.factor_container = ttk.Frame(self.factor_tab)
+            self.factor_control_panel = ttk.LabelFrame(self.factor_container, text="Factor Analysis Controls")
+            self.factor_results_panel = ttk.LabelFrame(self.factor_container, text="Results")
+            self.factor_options_frame = ttk.LabelFrame(self.factor_control_panel, text="Factor Analysis Options")
+            self.factor_results_frame = ttk.LabelFrame(self.factor_results_panel, text="Factor Analysis Results")
+
+            # Initialize status frame
+            self.status_frame = ttk.Frame(self.root)
+
+            # Store all frames in a dictionary for easy access
+            self.frames = {
+                'data_tab': self.data_tab,
+                'cluster_tab': self.cluster_tab,
+                'viz_tab': self.viz_tab,
+                'analysis_tab': self.analysis_tab,
+                'factor_tab': self.factor_tab,
+                'cluster_frame': self.cluster_frame,
+                'kmeans_frame': self.kmeans_frame,
+                'dbscan_frame': self.dbscan_frame,
+                'hierarchical_frame': self.hierarchical_frame,
+                'gmm_frame': self.gmm_frame,
+                'params_frame': self.params_frame,
+                'plot_options_frame': self.plot_options_frame,
+                'features_frame': self.features_frame,
+                'analysis_options_frame': self.analysis_options_frame,
+                'results_frame': self.results_frame,
+                'factor_options_frame': self.factor_options_frame,
+                'factor_results_frame': self.factor_results_frame,
+                'status_frame': self.status_frame
+            }
+
+            logger.info("GUI frames initialized successfully")
+
+        except Exception as e:
+            logger.error(f"Failed to initialize frames: {str(e)}\n{traceback.format_exc()}")
+            raise
 
 def main():
     """Main entry point for the clustering GUI application"""
