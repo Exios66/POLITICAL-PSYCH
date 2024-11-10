@@ -109,26 +109,21 @@ class ClusterAnalysisGUI:
         logger.info("Initializing ClusterAnalysisGUI")
         
         try:
+            # Initialize root window
             self.root = root
             self.root.title("Political Psychology Cluster Analysis")
             self.root.geometry("1200x800")
-
-            # Configure logging
-            self._setup_logging()
-
-            # Initialize core variables
-            self._initialize_variables()
-
-            # Setup directories
-            self._setup_directories()
-
-            # Configure window minimum size
             self.root.minsize(800, 600)
 
             # Configure grid weights for proper scaling
             self.root.grid_rowconfigure(0, weight=1)
             self.root.grid_columnconfigure(0, weight=1)
 
+            # Initialize core components in order
+            self._setup_logging()
+            self._initialize_variables()
+            self._setup_directories()
+            
             # Create main container with tabs
             self.notebook = ttk.Notebook(self.root)
             self.notebook.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
@@ -136,12 +131,25 @@ class ClusterAnalysisGUI:
             # Initialize all frames
             self._initialize_frames()
 
+            # Create menu bar after frames are initialized
+            self._create_menu_bar()
+
             # Add tabs to notebook
             self.notebook.add(self.data_tab, text="Data Processing")
             self.notebook.add(self.cluster_tab, text="Clustering")
             self.notebook.add(self.viz_tab, text="Visualization")
             self.notebook.add(self.analysis_tab, text="Analysis")
             self.notebook.add(self.factor_tab, text="Factor Analysis")
+
+            # Initialize data structures
+            self.data = None
+            self.cleaned_data = None
+            self.normalized_data = None
+            self.cluster_labels = None
+            self.current_plot = None
+            self.random_state = 42
+            self.analysis_results = None
+            self.factor_results = None
 
             # Initialize tab contents
             self.create_data_tab()
@@ -152,6 +160,14 @@ class ClusterAnalysisGUI:
 
             # Create status and progress bars
             self._create_status_bars()
+
+            # Initialize matplotlib figure for plotting
+            self.fig = Figure(figsize=(8, 6))
+            self.canvas = None  # Will be initialized when needed
+
+            # Set initial status
+            self.status_var.set("Ready")
+            self.progress_var.set(0)
 
             logger.info("ClusterAnalysisGUI initialized successfully")
 
@@ -936,55 +952,100 @@ class ClusterAnalysisGUI:
             raise
 
     def process_data(self):
-        """Process the input data according to selected options"""
+        """Process the loaded data according to selected options"""
         try:
-            if not self.file_path.get():
-                raise ValueError("No input file selected")
+            if not hasattr(self, 'data'):
+                raise ValueError("No data loaded. Please load data first.")
 
             self.status_var.set("Processing data...")
-        except Exception as e:
-            self.logger.error(f"Error processing data: {str(e)}")
-            raise
             self.progress_var.set(0)
 
-            # Read data
-            file_path = Path(self.file_path.get())
-            if file_path.suffix.lower() == '.csv':
-                data = pd.read_csv(file_path)
-            elif file_path.suffix.lower() == '.xlsx':
-                data = pd.read_excel(file_path)
-            else:
-                raise ValueError(f"Unsupported file format: {file_path.suffix}")
+            # Create a copy of the original data
+            processed_data = self.data.copy()
 
-            # Store original data
-            self.original_data = data.copy()
-            self.cleaned_data = data.copy()
-
-            # Handle missing values if selected
+            # Handle missing values
             if self.handle_missing.get():
                 method = self.missing_method.get()
                 if method == "mean":
-                    self.cleaned_data = self.cleaned_data.fillna(self.cleaned_data.mean())
+                    processed_data = processed_data.fillna(processed_data.mean())
                 elif method == "median":
-                    self.cleaned_data = self.cleaned_data.fillna(self.cleaned_data.median())
+                    processed_data = processed_data.fillna(processed_data.median())
                 elif method == "mode":
-                    self.cleaned_data = self.cleaned_data.fillna(self.cleaned_data.mode().iloc[0])
-                self.progress_var.set(33)
+                    processed_data = processed_data.fillna(processed_data.mode().iloc[0])
+                elif method == "drop":
+                    processed_data = processed_data.dropna()
+                self.progress_var.set(30)
 
-            # Remove outliers if selected
+            # Remove outliers
             if self.remove_outliers.get():
                 method = self.outlier_method.get()
                 if method == "zscore":
-                    z_scores = np.abs(stats.zscore(self.cleaned_data))
-                    self.cleaned_data = self.cleaned_data[(z_scores < 3).all(axis=1)]
+                    z_scores = np.abs(stats.zscore(processed_data, nan_policy='omit'))
+                    processed_data = processed_data[(z_scores < 3).all(axis=1)]
                 elif method == "iqr":
-                    Q1 = self.cleaned_data.quantile(0.25)
-                    Q3 = self.cleaned_data.quantile(0.75)
+                    Q1 = processed_data.quantile(0.25)
+                    Q3 = processed_data.quantile(0.75)
                     IQR = Q3 - Q1
-                    self.cleaned_data = self.cleaned_data[
-                        ~((self.cleaned_data < (Q1 - 1.5 * IQR)) | 
-                          (self.cleaned_data > (Q3 + 1.5 * IQR))).any(axis=1)]
-                    self.progress_var.set(66)
+                    processed_data = processed_data[
+                        ~((processed_data < (Q1 - 1.5 * IQR)) | 
+                          (processed_data > (Q3 + 1.5 * IQR))).any(axis=1)]
+                elif method == "isolation_forest":
+                    from sklearn.ensemble import IsolationForest
+                    iso_forest = IsolationForest(random_state=self.random_state)
+                    outlier_labels = iso_forest.fit_predict(processed_data)
+                    processed_data = processed_data[outlier_labels == 1]
+                self.progress_var.set(60)
+
+            # Normalize features
+            if self.normalize.get():
+                method = self.norm_method.get()
+                if method == "standard":
+                    scaler = StandardScaler()
+                elif method == "minmax":
+                    scaler = MinMaxScaler()
+                else:  # robust
+                    scaler = RobustScaler()
+                
+                # Store column names
+                columns = processed_data.columns
+                
+                # Scale the data
+                scaled_data = scaler.fit_transform(processed_data)
+                
+                # Convert back to DataFrame with original column names
+                processed_data = pd.DataFrame(scaled_data, columns=columns)
+                self.progress_var.set(90)
+
+            # Store processed data
+            self.cleaned_data = processed_data
+            self.normalized_data = processed_data.copy()
+
+            # Update preview
+            self._update_data_preview()
+            self._update_feature_list()
+
+            self.progress_var.set(100)
+            self.status_var.set("Data processing complete")
+            
+            # Show summary of processing
+            summary = f"""
+Data Processing Summary:
+-----------------------
+Original shape: {self.data.shape}
+Processed shape: {self.cleaned_data.shape}
+Missing values handled: {self.handle_missing.get()}
+Outliers removed: {self.remove_outliers.get()}
+Normalization applied: {self.normalize.get()}
+"""
+            messagebox.showinfo("Processing Complete", summary)
+            
+            self.logger.info("Data processing completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Data processing error: {str(e)}")
+            self.status_var.set(f"Error: {str(e)}")
+            messagebox.showerror("Error", f"Data processing failed: {str(e)}")
+            self.progress_var.set(0)
 
     def update_plot_options(self, *args):
         """Update visible options based on selected plot type"""
@@ -1279,34 +1340,274 @@ class ClusterAnalysisGUI:
     def browse_file(self):
         """Open file dialog to select input data file"""
         try:
-            filetypes = (
+            filetypes = [
                 ('CSV files', '*.csv'),
-                ('Excel files', '*.xlsx'),
+                ('Excel files', '*.xlsx;*.xls'),
+                ('Text files', '*.txt'),
                 ('All files', '*.*')
-            )
+            ]
             
             filename = filedialog.askopenfilename(
-                title='Select data file',
-                initialdir='.',
-                filetypes=filetypes
+                title='Select Data File',
+                filetypes=filetypes,
+                initialdir='./'
             )
             
             if filename:
                 self.file_path.set(filename)
-                self.logger.info(f"Selected file: {filename}")
-                
-                # Clear any previous data
-                self.cleaned_data = None
-                self.normalized_data = None
-                self.cluster_labels = None
-                
-                # Clear preview
-                self.preview_text.delete(1.0, tk.END)
-                self.preview_text.insert(tk.END, "Please process the data to see preview.")
+                self.load_data(filename)
                 
         except Exception as e:
             self.logger.error(f"Failed to browse file: {str(e)}")
             messagebox.showerror("Error", f"Failed to open file browser: {str(e)}")
+
+    def load_data(self, file_path):
+        """Load and preview data from selected file"""
+        try:
+            self.status_var.set("Loading data...")
+            self.progress_var.set(20)
+            
+            # Load data based on file extension
+            ext = Path(file_path).suffix.lower()
+            if ext == '.csv':
+                # Show CSV import options dialog
+                import_options = self._show_csv_import_dialog()
+                if import_options:
+                    self.data = pd.read_csv(
+                        file_path,
+                        encoding=import_options['encoding'],
+                        sep=import_options['delimiter'],
+                        decimal=import_options['decimal']
+                    )
+            elif ext in ['.xlsx', '.xls']:
+                # Show Excel import options dialog
+                import_options = self._show_excel_import_dialog()
+                if import_options:
+                    self.data = pd.read_excel(
+                        file_path,
+                        sheet_name=import_options['sheet']
+                    )
+            else:
+                raise ValueError(f"Unsupported file format: {ext}")
+            
+            self.progress_var.set(50)
+            
+            # Update preview
+            self._update_data_preview()
+            
+            # Update feature listbox
+            self._update_feature_list()
+            
+            self.progress_var.set(100)
+            self.status_var.set("Data loaded successfully")
+            
+            # Show data summary
+            self._show_data_summary()
+            
+        except Exception as e:
+            self.logger.error(f"Failed to load data: {str(e)}")
+            messagebox.showerror("Error", f"Failed to load data: {str(e)}")
+            self.progress_var.set(0)
+            self.status_var.set("Error loading data")
+            
+    def _show_csv_import_dialog(self):
+        """Show dialog for CSV import options"""
+        try:
+            dialog = tk.Toplevel(self.root)
+            dialog.title("CSV Import Options")
+            dialog.geometry("300x250")
+            dialog.transient(self.root)
+            dialog.grab_set()
+            
+            # Encoding options
+            encoding_frame = ttk.LabelFrame(dialog, text="Encoding")
+            encoding_frame.pack(fill=tk.X, padx=5, pady=5)
+            encoding_var = tk.StringVar(value='utf-8')
+            for enc in ['utf-8', 'latin1', 'cp1252']:
+                ttk.Radiobutton(
+                    encoding_frame,
+                    text=enc,
+                    variable=encoding_var,
+                    value=enc
+                ).pack(anchor=tk.W)
+            
+            # Delimiter options
+            delimiter_frame = ttk.LabelFrame(dialog, text="Delimiter")
+            delimiter_frame.pack(fill=tk.X, padx=5, pady=5)
+            delimiter_var = tk.StringVar(value=',')
+            for delim, text in [(',', 'Comma'), (';', 'Semicolon'), ('\t', 'Tab')]:
+                ttk.Radiobutton(
+                    delimiter_frame,
+                    text=text,
+                    variable=delimiter_var,
+                    value=delim
+                ).pack(anchor=tk.W)
+            
+            # Decimal separator
+            decimal_frame = ttk.LabelFrame(dialog, text="Decimal Separator")
+            decimal_frame.pack(fill=tk.X, padx=5, pady=5)
+            decimal_var = tk.StringVar(value='.')
+            for dec in ['.', ',']:
+                ttk.Radiobutton(
+                    decimal_frame,
+                    text=dec,
+                    variable=decimal_var,
+                    value=dec
+                ).pack(anchor=tk.W)
+            
+            # Result dictionary
+            result = {}
+            
+            def on_ok():
+                result.update({
+                    'encoding': encoding_var.get(),
+                    'delimiter': delimiter_var.get(),
+                    'decimal': decimal_var.get()
+                })
+                dialog.destroy()
+                
+            def on_cancel():
+                dialog.destroy()
+            
+            # Buttons
+            button_frame = ttk.Frame(dialog)
+            button_frame.pack(fill=tk.X, padx=5, pady=5)
+            ttk.Button(button_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT)
+            
+            dialog.wait_window()
+            return result if result else None
+            
+        except Exception as e:
+            self.logger.error(f"Failed to show CSV import dialog: {str(e)}")
+            raise
+
+    def _show_excel_import_dialog(self):
+        """Show dialog for Excel import options"""
+        try:
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Excel Import Options")
+            dialog.geometry("300x200")
+            dialog.transient(self.root)
+            dialog.grab_set()
+            
+            # Get sheet names
+            xl = pd.ExcelFile(self.file_path.get())
+            sheet_names = xl.sheet_names
+            
+            # Sheet selection
+            sheet_frame = ttk.LabelFrame(dialog, text="Select Sheet")
+            sheet_frame.pack(fill=tk.X, padx=5, pady=5)
+            sheet_var = tk.StringVar(value=sheet_names[0])
+            for sheet in sheet_names:
+                ttk.Radiobutton(
+                    sheet_frame,
+                    text=sheet,
+                    variable=sheet_var,
+                    value=sheet
+                ).pack(anchor=tk.W)
+            
+            # Result dictionary
+            result = {}
+            
+            def on_ok():
+                result['sheet'] = sheet_var.get()
+                dialog.destroy()
+                
+            def on_cancel():
+                dialog.destroy()
+            
+            # Buttons
+            button_frame = ttk.Frame(dialog)
+            button_frame.pack(fill=tk.X, padx=5, pady=5)
+            ttk.Button(button_frame, text="OK", command=on_ok).pack(side=tk.LEFT, padx=5)
+            ttk.Button(button_frame, text="Cancel", command=on_cancel).pack(side=tk.LEFT)
+            
+            dialog.wait_window()
+            return result if result else None
+            
+        except Exception as e:
+            self.logger.error(f"Failed to show Excel import dialog: {str(e)}")
+            raise
+
+    def _update_data_preview(self):
+        """Update the data preview text widget"""
+        try:
+            self.preview_text.delete(1.0, tk.END)
+            
+            # Add data info
+            info_text = f"Data Shape: {self.data.shape}\n\n"
+            info_text += "Data Types:\n"
+            info_text += str(self.data.dtypes) + "\n\n"
+            info_text += "Data Preview:\n"
+            info_text += str(self.data.head())
+            
+            self.preview_text.insert(tk.END, info_text)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to update data preview: {str(e)}")
+            raise
+
+    def _update_feature_list(self):
+        """Update the feature listbox with column names"""
+        try:
+            self.feature_listbox.delete(0, tk.END)
+            for column in self.data.columns:
+                self.feature_listbox.insert(tk.END, column)
+                
+        except Exception as e:
+            self.logger.error(f"Failed to update feature list: {str(e)}")
+            raise
+
+    def _show_data_summary(self):
+        """Show a summary of the loaded data"""
+        try:
+            summary = pd.DataFrame({
+                'Type': self.data.dtypes,
+                'Non-Null': self.data.count(),
+                'Null': self.data.isnull().sum(),
+                'Unique': self.data.nunique(),
+                'Memory': self.data.memory_usage(deep=True)
+            })
+            
+            dialog = tk.Toplevel(self.root)
+            dialog.title("Data Summary")
+            dialog.geometry("600x400")
+            
+            # Create text widget with scrollbars
+            text_frame = ttk.Frame(dialog)
+            text_frame.pack(fill=tk.BOTH, expand=True, padx=5, pady=5)
+            
+            scroll_y = ttk.Scrollbar(text_frame)
+            scroll_y.pack(side=tk.RIGHT, fill=tk.Y)
+            
+            scroll_x = ttk.Scrollbar(text_frame, orient=tk.HORIZONTAL)
+            scroll_x.pack(side=tk.BOTTOM, fill=tk.X)
+            
+            text = tk.Text(
+                text_frame,
+                wrap=tk.NONE,
+                xscrollcommand=scroll_x.set,
+                yscrollcommand=scroll_y.set
+            )
+            text.pack(fill=tk.BOTH, expand=True)
+            
+            scroll_y.config(command=text.yview)
+            scroll_x.config(command=text.xview)
+            
+            # Insert summary
+            text.insert(tk.END, str(summary))
+            text.config(state='disabled')
+            
+            ttk.Button(
+                dialog,
+                text="Close",
+                command=dialog.destroy
+            ).pack(pady=5)
+            
+        except Exception as e:
+            self.logger.error(f"Failed to show data summary: {str(e)}")
+            messagebox.showerror("Error", f"Failed to show data summary: {str(e)}")
 
     def update_cluster_options(self, *args):
         """Update clustering options based on selected method"""
@@ -2559,6 +2860,370 @@ class ClusterAnalysisGUI:
         except Exception as e:
             logger.error(f"Failed to initialize frames: {str(e)}\n{traceback.format_exc()}")
             raise
+
+    def _get_clustering_parameters(self):
+        """Get current clustering parameters based on selected method"""
+        try:
+            method = self.cluster_method.get()
+            params = {}
+            
+            if method == "kmeans":
+                params = {
+                    'n_clusters': self.n_clusters.get(),
+                    'n_init': self.n_init.get(),
+                    'max_iter': self.max_iter.get(),
+                    'random_state': self.random_state
+                }
+            elif method == "dbscan":
+                params = {
+                    'eps': self.eps.get(),
+                    'min_samples': self.min_samples.get()
+                }
+            elif method == "hierarchical":
+                params = {
+                    'n_clusters': self.n_clusters_hierarchical.get(),
+                    'linkage': self.linkage.get()
+                }
+            elif method == "gmm":
+                params = {
+                    'n_components': self.gmm_n_components.get(),
+                    'covariance_type': self.gmm_covariance_type.get()
+                }
+                
+            return params
+            
+        except Exception as e:
+            self.logger.error(f"Failed to get clustering parameters: {str(e)}")
+            raise
+
+    def _create_menu_bar(self):
+        """Create the main menu bar"""
+        try:
+            # Create main menu bar
+            menubar = tk.Menu(self.root)
+            self.root.config(menu=menubar)
+
+            # File menu
+            file_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="File", menu=file_menu)
+            file_menu.add_command(label="Open Data File...", command=self.browse_file)
+            file_menu.add_command(label="Save Results...", command=self.save_clustering_results)
+            file_menu.add_separator()
+            file_menu.add_command(label="Exit", command=self.root.quit)
+
+            # Data menu
+            data_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Data", menu=data_menu)
+            data_menu.add_command(label="Process Data", command=self.process_data)
+            data_menu.add_command(label="Show Data Summary", command=self._show_data_summary)
+            data_menu.add_separator()
+            data_menu.add_command(label="Export Processed Data...", command=self._export_processed_data)
+
+            # Clustering menu
+            clustering_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Clustering", menu=clustering_menu)
+            clustering_menu.add_command(label="Run Clustering", command=self.perform_clustering)
+            clustering_menu.add_command(label="Advanced Clustering", command=self.perform_advanced_clustering)
+            clustering_menu.add_separator()
+            clustering_menu.add_command(label="Show Dendrogram", command=self.show_dendrogram)
+            clustering_menu.add_command(label="Estimate DBSCAN Parameters", command=self.estimate_epsilon)
+
+            # Analysis menu
+            analysis_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Analysis", menu=analysis_menu)
+            analysis_menu.add_command(label="Run Analysis", command=self.run_analysis)
+            analysis_menu.add_command(label="Factor Analysis", command=self.run_factor_analysis)
+            analysis_menu.add_separator()
+            analysis_menu.add_command(label="Export Analysis Results...", command=self.export_analysis)
+            analysis_menu.add_command(label="Export Factor Analysis...", command=self.save_factor_analysis_results)
+
+            # Visualization menu
+            viz_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Visualization", menu=viz_menu)
+            viz_menu.add_command(label="Generate Plot", command=self.generate_plot)
+            viz_menu.add_command(label="Save Plot...", command=self.save_plot)
+
+            # Tools menu
+            tools_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Tools", menu=tools_menu)
+            tools_menu.add_checkbutton(label="Auto-tune Parameters", variable=self.auto_tune)
+            tools_menu.add_checkbutton(label="Show Tooltips", variable=self.show_tooltips)
+            tools_menu.add_checkbutton(label="Dark Mode", variable=self.dark_mode)
+
+            # Help menu
+            help_menu = tk.Menu(menubar, tearoff=0)
+            menubar.add_cascade(label="Help", menu=help_menu)
+            help_menu.add_command(label="Documentation", command=self._show_documentation)
+            help_menu.add_command(label="About", command=self._show_about)
+
+            self.logger.info("Menu bar created successfully")
+
+        except Exception as e:
+            self.logger.error(f"Failed to create menu bar: {str(e)}")
+            raise
+
+    def _export_processed_data(self):
+        """Export processed data to file"""
+        try:
+            if not hasattr(self, 'cleaned_data'):
+                raise ValueError("No processed data available")
+
+            file_path = filedialog.asksaveasfilename(
+                defaultextension=".csv",
+                filetypes=[
+                    ("CSV files", "*.csv"),
+                    ("Excel files", "*.xlsx"),
+                    ("All files", "*.*")
+                ],
+                title="Export Processed Data"
+            )
+
+            if file_path:
+                if file_path.endswith('.csv'):
+                    self.cleaned_data.to_csv(file_path, index=False)
+                else:
+                    self.cleaned_data.to_excel(file_path, index=False)
+
+                self.logger.info(f"Processed data exported to {file_path}")
+                self.status_var.set(f"Data exported to {file_path}")
+                messagebox.showinfo("Success", f"Data exported to {file_path}")
+
+        except Exception as e:
+            self.logger.error(f"Failed to export processed data: {str(e)}")
+            messagebox.showerror("Error", f"Failed to export data: {str(e)}")
+
+    def _show_documentation(self):
+        """Show documentation in a new window"""
+        try:
+            doc_window = tk.Toplevel(self.root)
+            doc_window.title("Documentation")
+            doc_window.geometry("800x600")
+
+            text = tk.Text(doc_window, wrap=tk.WORD, padx=10, pady=10)
+            text.pack(fill=tk.BOTH, expand=True)
+
+            # Add documentation text
+            docs = """
+Political Psychology Cluster Analysis Tool
+=======================================
+
+This tool provides functionality for clustering analysis of political psychology data.
+
+Features:
+---------
+1. Data Processing
+   - Handle missing values
+   - Remove outliers
+   - Normalize features
+
+2. Clustering Methods
+   - K-means
+   - DBSCAN
+   - Hierarchical
+   - Gaussian Mixture Model
+
+3. Analysis
+   - Statistical tests
+   - Feature importance
+   - Cluster stability
+   - Factor analysis
+
+4. Visualization
+   - Distribution plots
+   - Cluster profiles
+   - Dimensionality reduction
+   - Feature importance plots
+
+For more information, visit the documentation website.
+"""
+            text.insert(tk.END, docs)
+            text.config(state='disabled')
+
+        except Exception as e:
+            self.logger.error(f"Failed to show documentation: {str(e)}")
+            messagebox.showerror("Error", f"Failed to show documentation: {str(e)}")
+
+    def _show_about(self):
+        """Show about dialog"""
+        try:
+            about_text = """
+Political Psychology Cluster Analysis Tool
+Version 1.0.0
+
+A tool for analyzing political psychology data using various clustering methods.
+
+© 2024 Political Psychology Research Lab
+"""
+            messagebox.showinfo("About", about_text)
+
+        except Exception as e:
+            self.logger.error(f"Failed to show about dialog: {str(e)}")
+            messagebox.showerror("Error", f"Failed to show about dialog: {str(e)}")
+
+    def show_dendrogram(self):
+        """Show dendrogram for hierarchical clustering"""
+        try:
+            if self.normalized_data is None:
+                raise ValueError("No processed data available")
+                
+            self.status_var.set("Generating dendrogram...")
+            self.progress_var.set(0)
+            
+            # Create new window for dendrogram
+            dendro_window = tk.Toplevel(self.root)
+            dendro_window.title("Hierarchical Clustering Dendrogram")
+            dendro_window.geometry("800x600")
+            
+            # Create figure
+            fig = Figure(figsize=(10, 8))
+            ax = fig.add_subplot(111)
+            
+            # Calculate linkage matrix
+            linkage_matrix = linkage(
+                self.normalized_data,
+                method=self.linkage.get(),
+                metric='euclidean'
+            )
+            
+            self.progress_var.set(50)
+            
+            # Plot dendrogram
+            dendrogram(
+                linkage_matrix,
+                ax=ax,
+                leaf_rotation=90,
+                leaf_font_size=8
+            )
+            
+            ax.set_title(f'Hierarchical Clustering Dendrogram ({self.linkage.get()} linkage)')
+            ax.set_xlabel('Sample Index')
+            ax.set_ylabel('Distance')
+            
+            # Add canvas to window
+            canvas = FigureCanvasTkAgg(fig, master=dendro_window)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            # Add toolbar
+            toolbar = NavigationToolbar2Tk(canvas, dendro_window)
+            toolbar.update()
+            
+            # Add save button
+            def save_dendrogram():
+                file_path = filedialog.asksaveasfilename(
+                    defaultextension=".png",
+                    filetypes=[
+                        ("PNG files", "*.png"),
+                        ("PDF files", "*.pdf"),
+                        ("SVG files", "*.svg"),
+                        ("All files", "*.*")
+                    ],
+                    title="Save Dendrogram"
+                )
+                
+                if file_path:
+                    fig.savefig(file_path, dpi=300, bbox_inches='tight')
+                    self.logger.info(f"Dendrogram saved to {file_path}")
+                    messagebox.showinfo("Success", f"Dendrogram saved to {file_path}")
+            
+            ttk.Button(
+                dendro_window,
+                text="Save Dendrogram",
+                command=save_dendrogram
+            ).pack(pady=5)
+            
+            self.progress_var.set(100)
+            self.status_var.set("Dendrogram generated successfully")
+            
+            # Store current plot
+            self.current_plot = fig
+            
+            self.logger.info("Dendrogram displayed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to show dendrogram: {str(e)}")
+            messagebox.showerror("Error", f"Failed to generate dendrogram: {str(e)}")
+            self.progress_var.set(0)
+            self.status_var.set("Error generating dendrogram")
+
+    def estimate_epsilon(self):
+        """Estimate epsilon parameter for DBSCAN using nearest neighbors"""
+        try:
+            if self.normalized_data is None:
+                raise ValueError("No processed data available")
+                
+            self.status_var.set("Estimating epsilon parameter...")
+            self.progress_var.set(0)
+            
+            # Calculate nearest neighbor distances
+            neigh = NearestNeighbors(n_neighbors=2)
+            nbrs = neigh.fit(self.normalized_data)
+            distances, indices = nbrs.kneighbors(self.normalized_data)
+            
+            # Sort distances
+            distances = np.sort(distances[:, 1])
+            
+            self.progress_var.set(50)
+            
+            # Create new window for plot
+            epsilon_window = tk.Toplevel(self.root)
+            epsilon_window.title("DBSCAN Epsilon Estimation")
+            epsilon_window.geometry("800x600")
+            
+            # Create figure
+            fig = Figure(figsize=(10, 6))
+            ax = fig.add_subplot(111)
+            
+            # Plot k-distance graph
+            ax.plot(range(len(distances)), distances)
+            ax.set_xlabel('Points sorted by distance')
+            ax.set_ylabel('k-nearest neighbor distance')
+            ax.set_title('k-distance Graph for Epsilon Estimation')
+            
+            # Find elbow point using kneedle algorithm
+            kneedle = KneeLocator(
+                range(len(distances)),
+                distances,
+                S=1.0,
+                curve='convex',
+                direction='increasing'
+            )
+            
+            if kneedle.knee is not None:
+                epsilon = distances[kneedle.knee]
+                ax.axhline(y=epsilon, color='r', linestyle='--')
+                ax.text(
+                    0.02, 0.98,
+                    f'Estimated ε = {epsilon:.3f}',
+                    transform=ax.transAxes,
+                    verticalalignment='top'
+                )
+                
+                # Update epsilon value in GUI
+                self.eps.set(epsilon)
+            
+            # Add canvas to window
+            canvas = FigureCanvasTkAgg(fig, master=epsilon_window)
+            canvas.draw()
+            canvas.get_tk_widget().pack(fill=tk.BOTH, expand=True)
+            
+            # Add toolbar
+            toolbar = NavigationToolbar2Tk(canvas, epsilon_window)
+            toolbar.update()
+            
+            self.progress_var.set(100)
+            self.status_var.set("Epsilon estimation complete")
+            
+            # Store current plot
+            self.current_plot = fig
+            
+            self.logger.info("Epsilon estimation completed successfully")
+            
+        except Exception as e:
+            self.logger.error(f"Failed to estimate epsilon: {str(e)}")
+            messagebox.showerror("Error", f"Failed to estimate epsilon: {str(e)}")
+            self.progress_var.set(0)
+            self.status_var.set("Error estimating epsilon")
 
 def main():
     """Main entry point for the clustering GUI application"""

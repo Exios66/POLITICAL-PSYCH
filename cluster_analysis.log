@@ -517,3 +517,73 @@ Traceback (most recent call last):
     self._initialize_frames()
 AttributeError: 'ClusterAnalysisGUI' object has no attribute '_initialize_frames'
 
+2024-11-10 01:56:13,607 - __main__ - CRITICAL - Failed to start application: 'ClusterAnalysisGUI' object has no attribute '_initialize_frames'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 2488, in main
+    self.factor_tab = ttk.Frame(self.notebook)
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 137, in __init__
+    self._initialize_frames()
+AttributeError: 'ClusterAnalysisGUI' object has no attribute '_initialize_frames'
+
+2024-11-10 01:56:20,010 - __main__ - INFO - Starting application
+2024-11-10 01:56:20,228 - __main__ - INFO - Initializing ClusterAnalysisGUI
+2024-11-10 01:56:20,228 - __main__ - INFO - Logging initialized
+2024-11-10 01:56:20,228 - __main__ - INFO - Initializing GUI variables
+2024-11-10 01:56:20,229 - __main__ - INFO - GUI variables initialized successfully
+2024-11-10 01:56:20,229 - __main__ - INFO - Setting up directories
+2024-11-10 01:56:20,229 - __main__ - INFO - Directories created successfully
+2024-11-10 01:56:20,229 - __main__ - INFO - Initializing GUI frames
+2024-11-10 01:56:20,238 - __main__ - INFO - GUI frames initialized successfully
+2024-11-10 01:56:20,259 - __main__ - INFO - Data tab created successfully
+2024-11-10 01:56:20,259 - __main__ - INFO - Clustering tab created successfully
+2024-11-10 01:56:20,298 - __main__ - INFO - Visualization tab created successfully
+2024-11-10 01:56:20,299 - __main__ - INFO - Analysis tab created successfully
+2024-11-10 01:56:20,300 - __main__ - INFO - Factor analysis tab initialized successfully
+2024-11-10 01:56:20,300 - __main__ - INFO - Status bars created successfully
+2024-11-10 01:56:20,300 - __main__ - INFO - ClusterAnalysisGUI initialized successfully
+2024-11-10 01:56:20,300 - __main__ - INFO - Starting main event loop
+2024-11-10 01:58:51,624 - __main__ - INFO - Starting application
+2024-11-10 01:58:51,869 - __main__ - INFO - Initializing ClusterAnalysisGUI
+2024-11-10 01:58:51,870 - __main__ - INFO - Logging initialized
+2024-11-10 01:58:51,870 - __main__ - INFO - Initializing GUI variables
+2024-11-10 01:58:51,870 - __main__ - INFO - GUI variables initialized successfully
+2024-11-10 01:58:51,870 - __main__ - INFO - Setting up directories
+2024-11-10 01:58:51,870 - __main__ - INFO - Directories created successfully
+2024-11-10 01:58:51,870 - __main__ - INFO - Initializing GUI frames
+2024-11-10 01:58:51,880 - __main__ - INFO - GUI frames initialized successfully
+2024-11-10 01:58:51,897 - __main__ - INFO - Data tab created successfully
+2024-11-10 01:58:51,897 - __main__ - INFO - Clustering tab created successfully
+2024-11-10 01:58:51,927 - __main__ - INFO - Visualization tab created successfully
+2024-11-10 01:58:51,928 - __main__ - INFO - Analysis tab created successfully
+2024-11-10 01:58:51,928 - __main__ - INFO - Factor analysis tab initialized successfully
+2024-11-10 01:58:51,928 - __main__ - INFO - Status bars created successfully
+2024-11-10 01:58:51,928 - __main__ - INFO - ClusterAnalysisGUI initialized successfully
+2024-11-10 01:58:51,928 - __main__ - INFO - Starting main event loop
+2024-11-10 02:02:33,621 - __main__ - INFO - Starting application
+2024-11-10 02:02:33,827 - __main__ - INFO - Initializing ClusterAnalysisGUI
+2024-11-10 02:02:33,827 - __main__ - INFO - Logging initialized
+2024-11-10 02:02:33,827 - __main__ - INFO - Initializing GUI variables
+2024-11-10 02:02:33,828 - __main__ - INFO - GUI variables initialized successfully
+2024-11-10 02:02:33,828 - __main__ - INFO - Setting up directories
+2024-11-10 02:02:33,828 - __main__ - INFO - Directories created successfully
+2024-11-10 02:02:33,828 - __main__ - INFO - Initializing GUI frames
+2024-11-10 02:02:33,836 - __main__ - INFO - GUI frames initialized successfully
+2024-11-10 02:02:33,848 - __main__ - ERROR - Failed to create menu bar: 'ClusterAnalysisGUI' object has no attribute 'show_dendrogram'
+2024-11-10 02:02:33,849 - __main__ - ERROR - Failed to initialize ClusterAnalysisGUI: 'ClusterAnalysisGUI' object has no attribute 'show_dendrogram'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 135, in __init__
+    self._create_menu_bar()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 2928, in _create_menu_bar
+    clustering_menu.add_command(label="Show Dendrogram", command=self.show_dendrogram)
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'show_dendrogram'
+
+2024-11-10 02:03:10,010 - __main__ - CRITICAL - Failed to start application: 'ClusterAnalysisGUI' object has no attribute 'show_dendrogram'
+Traceback (most recent call last):
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 3073, in main
+    app = ClusterAnalysisGUI(root)
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 135, in __init__
+    self._create_menu_bar()
+  File "/Users/luciusjmorningstar/Documents/GitHub/POLITICAL-PSYCH/scripts/Python/cluster.py", line 2928, in _create_menu_bar
+    clustering_menu.add_command(label="Show Dendrogram", command=self.show_dendrogram)
+AttributeError: 'ClusterAnalysisGUI' object has no attribute 'show_dendrogram'
+
