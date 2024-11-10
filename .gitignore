@@ -1,4 +1,7 @@
 
 logs/
 data/processed_data/
-*.log 
+*.log
+logs/*.log
+data/processed_data/*.log
+cluster_analysis.log

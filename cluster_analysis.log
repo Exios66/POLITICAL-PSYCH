@@ -587,3 +587,21 @@ Traceback (most recent call last):
     clustering_menu.add_command(label="Show Dendrogram", command=self.show_dendrogram)
 AttributeError: 'ClusterAnalysisGUI' object has no attribute 'show_dendrogram'
 
+2024-11-10 02:04:18,458 - __main__ - INFO - Starting application
+2024-11-10 02:04:18,581 - __main__ - INFO - Initializing ClusterAnalysisGUI
+2024-11-10 02:04:18,581 - __main__ - INFO - Logging initialized
+2024-11-10 02:04:18,581 - __main__ - INFO - Initializing GUI variables
+2024-11-10 02:04:18,582 - __main__ - INFO - GUI variables initialized successfully
+2024-11-10 02:04:18,582 - __main__ - INFO - Setting up directories
+2024-11-10 02:04:18,582 - __main__ - INFO - Directories created successfully
+2024-11-10 02:04:18,582 - __main__ - INFO - Initializing GUI frames
+2024-11-10 02:04:18,585 - __main__ - INFO - GUI frames initialized successfully
+2024-11-10 02:04:18,592 - __main__ - INFO - Menu bar created successfully
+2024-11-10 02:04:18,602 - __main__ - INFO - Data tab created successfully
+2024-11-10 02:04:18,603 - __main__ - INFO - Clustering tab created successfully
+2024-11-10 02:04:18,636 - __main__ - INFO - Visualization tab created successfully
+2024-11-10 02:04:18,636 - __main__ - INFO - Analysis tab created successfully
+2024-11-10 02:04:18,637 - __main__ - INFO - Factor analysis tab initialized successfully
+2024-11-10 02:04:18,637 - __main__ - INFO - Status bars created successfully
+2024-11-10 02:04:18,638 - __main__ - INFO - ClusterAnalysisGUI initialized successfully
+2024-11-10 02:04:18,638 - __main__ - INFO - Starting main event loop
